@@ -1,4 +1,4 @@
-# Base AI-ETF Protocol
+# RAFA AI-ETF Protocol
 
 A decentralized Asset Management protocol on Base L2, integrated with Aerodrome Finance. This protocol allows AI agents or human managers to operate on-chain ETFs with automated NAV calculation and liquidity execution.
 

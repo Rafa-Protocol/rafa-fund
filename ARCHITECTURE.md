@@ -10,10 +10,10 @@ The protocol consists of a Factory registry and individual Fund instances.
 
 ```mermaid
 graph TD
-    User[Investor] -->|Mint/Burn| FundToken[FundToken (ERC20)]
+    User[Investor] -->|Mint/Burn| FundToken[FundToken ERC20]
     Manager[AI Agent / Manager] -->|Trade/Rebalance| FundToken
     FundToken -->|Swap/Quote| Aerodrome[Aerodrome Router]
-    FundToken -->|Oracle Updates| Chainlink[Price Oracles (Optional)]
+    FundToken -->|Oracle Updates| Chainlink[Price Oracles Optional]
     Factory[FundFactory] -->|Deploys| FundToken
 ```
 
