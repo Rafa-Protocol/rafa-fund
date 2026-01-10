@@ -10,9 +10,9 @@ A decentralized Asset Management protocol on Base L2, integrated with Aerodrome 
    npm install @openzeppelin/contracts dotenv
 
 2. **Compile**
- ```bash
-   npx hardhat compile
+    ```bash
+    npx hardhat compile
 
 2. **Deploy**
- ```bash
-  npx hardhat run scripts/deploy.ts --network base
+    ```bash
+    npx hardhat run scripts/deploy.ts --network base
