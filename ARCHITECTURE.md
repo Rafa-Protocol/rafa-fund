@@ -1,120 +1,89 @@
-# RAFAFund Protocol Architecture
+# RAFA Fund Protocol V2 architecture
 
-## 1. Executive Summary
-The **RAFAFund Protocol** is a decentralized asset management infrastructure built on the Base L2 blockchain. It allows fund managers (AI Agents or Humans) to deploy and manage on-chain ETFs (Exchange Traded Funds). 
-
-Each Fund is a compliant ERC20 token representing a share of a basket of underlying assets. The protocol integrates natively with **Aerodrome Finance** for liquidity execution and asset valuation.
-
-## 2. System Context
-The protocol consists of a Factory registry and individual Fund instances.
+## System model
 
 ```mermaid
-graph TD
-    User[Investor] -->|Mint/Burn| FundToken[FundToken ERC20]
-    Manager[AI Agent / Manager] -->|Trade/Rebalance| FundToken
-    FundToken -->|Swap/Quote| Aerodrome[Aerodrome Router]
-    FundToken -->|Oracle Updates| Chainlink[Price Oracles Optional]
-    Factory[FundFactory] -->|Deploys| FundToken
+flowchart LR
+    Investor[Investor wallet] -->|Deposit accounting asset| Fund[RafaFundV2]
+    Fund -->|Mint ERC-20 shares| Investor
+    Investor -->|Redeem liquid or in kind| Fund
+    Trader[Restricted RAFA trader] -->|Guarded rebalances| Fund
+    Safe[RAFA admin multisig] -->|Assets, caps and roles| Fund
+    Guardian[Pause guardian] -->|Pause deposits or trading| Fund
+    Oracle[Chainlink adapters] -->|Fresh NAV prices| Fund
+    Router[Aerodrome router] <-->|Supported swaps| Fund
+    Registry[FundFactoryV2 registry] -->|Official fund list| Fund
 ```
 
-## 3. Core Components
+## Deployment and registry
 
-### 3.1 FundFactory (FundFactory.sol)
-**Responsibility:** Deployment registry and configuration governance.
+Each vault is an immutable `RafaFundV2` deployment. `FundFactoryV2` deliberately acts as a registry rather than embedding vault creation bytecode. This keeps both contracts below EVM size limits and avoids proxy upgrade authority.
 
-- **Registry:** Maintains an index of all legitimate funds created by the protocol.
-- **Deployment:** Uses standard new deployment to ensure unique state for every fund (avoiding proxy complexity for security).
-- **Indexing:** Emits FundCreated events for subgraph ingestion.
+Only the registry owner can register a fund. Registration confirms the V2 implementation marker, the registry's accounting asset and Aerodrome router, and that the performance fee does not exceed the registry maximum. The marker is a compatibility check rather than proof of bytecode identity, so the owner must also verify the deployed bytecode and constructor arguments before registration. The registry owner should be a RAFA Safe multisig.
 
-### 3.2 FundToken (BaseETF.sol)
-**Responsibility:** Vault management, NAV calculation, and share issuance.
+## Roles
 
-- **Token Standard:** ERC20 (Mintable/Burnable).
-- **Accounting:** Calculates Net Asset Value (NAV) in USDC terms.
-- **Liquidity Strategy:** 
-  - Volatile Pools: Standard $x \times y = k$ (e.g., WETH/USDC).
-  - Stable Pools: $x^3y + xy^3 = k$ (e.g., USDC/DAI).
+| Role | Intended holder | Authority |
+| --- | --- | --- |
+| Default admin | RAFA Safe | Manage assets, caps, roles, metadata and recovery of unsupported tokens. Admin transfer is two-step and delayed. |
+| Trader | Restricted automation key | Swap only between the accounting asset and supported assets within on-chain risk limits. |
+| Guardian | Independent operations key or Safe | Pause new deposits and trading. Only the admin can unpause. |
+| Fee recipient | RAFA treasury/Safe | Receive newly minted performance-fee shares. |
 
-## 4. Operational Flows
+The trader cannot transfer vault assets to an arbitrary recipient, change supported assets, change prices, or grant roles.
 
-### 4.1 Minting (Deposit)
-Users deposit a stablecoin (USDC) to receive Fund Tokens. The exchange rate is determined by the current NAV.
+## Deposits and shares
 
-$$ Shares = \frac{Deposit_{USDC} \times TotalSupply}{TotalAUM_{USDC}} $$
+The accounting asset is the ERC-4626 asset, initially expected to be USDC on Base. Fund shares use 18 decimals through ERC-4626's virtual-share offset.
 
-```mermaid
-sequenceDiagram
-    actor User
-    participant Fund
-    participant Aerodrome
-    
-    User->>Fund: approve(USDC)
-    User->>Fund: mint(amountUSDC)
-    activate Fund
-    Fund->>Fund: Calculate Total AUM (Quote all assets on Aerodrome)
-    Fund->>Fund: Calculate Share Ratio
-    Fund->>User: transferFrom(USDC)
-    Fund->>User: mint(FundTokens)
-    deactivate Fund
-```
+Deposits are valued against the full oracle-priced portfolio. The web application should call `previewDeposit` and submit `depositWithSlippage` with a user-approved `minSharesOut`. Deposits stop when paused or when the fund reaches its configured NAV cap.
 
-### 4.2 Trading (Active Management)
-The Manager (AI Agent) executes trades to rebalance the portfolio.
+## NAV and pricing
 
-- **Access Control:** Only MANAGER_ROLE can execute trades.
-- **Safety:** Trades are atomic; assets never leave the contract during a swap.
-- **Routing:** Intelligent routing via Aerodrome's Router.
+`totalAssets` returns the accounting-asset value of idle accounting tokens plus every active supported asset. Each asset has:
 
-### 4.3 Redemption (Burn)
-Users can exit the fund in two modes:
+- a price-oracle adapter;
+- a maximum permitted price age;
+- token decimals cached at configuration time;
+- an Aerodrome stable/volatile route flag; and
+- a maximum share of fund NAV.
 
-- **Liquidate (Standard):** The contract sells the user's portion of assets for USDC and sends USDC.
-- **In-Kind (Advanced):** The contract transfers the underlying assets directly to the user (avoids slippage).
+`ChainlinkPriceOracle` divides an asset/USD feed by the accounting-asset/USD feed. On Base it should also receive the official L2 sequencer uptime feed and a non-zero grace period. Stale or invalid data causes valuation-dependent operations to revert instead of silently valuing an asset at zero.
 
-## 5. Data Models & Storage
+## Trading and risk controls
 
-### Asset Configuration (AssetConfig)
-Every asset held by a fund is tracked in a mapping with specific configuration flags.
+Every trade must:
 
-| Field | Type | Description |
-|-------|------|-------------|
-| isSupported | bool | Whitelist status of the token. |
-| isStablePair | bool | true if liquidity is in Aerodrome Stable Pool (e.g., DAI/USDC). |
-| manualPrice | uint256 | Backup price (18 decimals) if oracleMode is enabled. |
+1. Be submitted by `TRADER_ROLE` while trading is active.
+2. Use the accounting asset as one side of the pair.
+3. Use a supported asset as the other side.
+4. Remain below the maximum fraction of current NAV allowed per trade.
+5. Set `minAmountOut` no lower than the oracle quote minus the fund's maximum slippage.
+6. Leave purchased-asset exposure below that asset's configured concentration limit.
+7. Send all output back to the vault.
 
-### Global State
-- **Active Assets:** An array `address[]` tracking all tokens currently held to allow iteration during NAV calculation.
-- **Limits:** MAX_ASSETS (default 10) prevents gas limit loops.
+The transaction reverts atomically if any post-trade exposure check fails.
 
-## 6. Security Considerations
+## Performance fees
 
-### 6.1 Valuation Attacks (Flash Loans)
-**Risk:** An attacker flash-loans capital to manipulate an asset's price on Aerodrome, then Mints/Burns FundTokens at a distorted NAV.
+Fees use a per-share high-water mark. When NAV per share exceeds the mark, the fund mints enough shares to the fee recipient to represent the configured percentage of profit. The high-water mark is then updated to the post-fee share price.
 
-**Mitigation:** 
-- **Oracle Mode:** Enable Chainlink feeds for high-value mints.
-- **Slippage Protection:** The trade function requires minAmountOut.
+Fees crystallize before standard deposits and redemptions and can also be crystallized permissionlessly. In-kind redemption attempts accrual first; if an oracle is unavailable, the redemption proceeds and emits `PerformanceFeeAccrualSkipped` so investor exit is not blocked.
 
-### 6.2 Gas Limits (DoS)
-**Risk:** If a fund holds too many tokens (e.g., 50+), the loop to calculate NAV will exceed the block gas limit, locking funds.
+## Redemptions
 
-**Mitigation:** 
-- **Hard Cap:** MAX_ASSETS constant limits portfolio size to 10 assets.
+Standard ERC-4626 `withdraw` and `redeem` calls are limited to idle accounting-asset liquidity. The UI must use `maxWithdraw`/`maxRedeem` and `redeemWithSlippage`.
 
-## 7. Directory Structure
+`redeemInKind` burns shares and transfers a proportional amount of the accounting asset and every supported token. It does not require a DEX and continues to function during deposit/trading pauses and oracle failures.
 
-```
-├── contracts
-│   ├── core
-│   │   ├── FundFactory.sol       # Main Entrypoint
-│   │   └── BaseETF.sol           # The Fund Logic
-│   ├── interfaces
-│   │   └── IAerodromeRouter.sol  # Aerodrome Interaction
-│   └── libraries
-│       └── MathUtils.sol         # Safe math wrappers
-├── scripts
-│   └── deploy.ts                 # Hardhat deployment
-├── test
-│   └── FundFlow.spec.ts          # Mainnet Fork tests
-└── ARCHITECTURE.md
-```
+## Indexing
+
+The investor application can index:
+
+- registry `FundCreated` and `FundStatusUpdated` events;
+- ERC-4626 `Deposit` and `Withdraw` events;
+- ERC-20 fund-share transfers;
+- `TradeExecuted`, `InKindRedemption`, and `PerformanceFeeAccrued` events; and
+- periodic `totalAssets`, `totalSupply`, and `pricePerShareWad` snapshots.
+
+Historical fund performance should be derived from price per share, not raw TVL, so investor deposits and redemptions are not mistaken for returns.
