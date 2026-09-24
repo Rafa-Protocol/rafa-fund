@@ -12,6 +12,7 @@
     "build": "hardhat compile --build-profile production",
     "check:size": "node scripts/check-contract-size.mjs",
     "compile": "hardhat compile",
+    "deploy:base-sepolia": "hardhat run scripts/deploy-base-sepolia.ts --network baseSepolia",
     "test": "hardhat test test/RafaFundV2.ts",
     "typecheck": "tsc --noEmit",
     "clean": "hardhat clean",

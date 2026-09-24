@@ -65,6 +65,22 @@ npm run check:size
 npm run typecheck
 ```
 
+### Base Sepolia rehearsal
+
+The testnet deployment script creates unrestricted mock `tUSDC` and `tWETH`,
+a fixed-price test oracle, two sample funds, and an official-fund registry. It
+also seeds deposits, one redemption, and one managed-asset trade so the web
+application has real onchain state to display.
+
+```bash
+BASE_SEPOLIA_RPC_URL=https://sepolia.base.org \
+DEPLOYER_PRIVATE_KEY=<funded-test-key> \
+npm run deploy:base-sepolia
+```
+
+The script refuses to run anywhere except chain ID `84532`. Its contracts and
+tokens are test fixtures only and must never be reused for a mainnet launch.
+
 ## Deployment sequence
 
 Use separate Base and Ethereum deployments. The same Safe may own both, but
