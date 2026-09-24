@@ -2,7 +2,7 @@
   "name": "@rafa-protocol/rafa-fund",
   "version": "2.0.0",
   "private": true,
-  "description": "RAFA Protocol smart contracts for non-custodial, tokenized investment funds on Base.",
+  "description": "RAFA Protocol smart contracts for non-custodial, tokenized investment funds on Base and Ethereum.",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -12,7 +12,7 @@
     "build": "hardhat compile --build-profile production",
     "check:size": "node scripts/check-contract-size.mjs",
     "compile": "hardhat compile",
-    "test": "hardhat test",
+    "test": "hardhat test test/RafaFundV2.ts",
     "typecheck": "tsc --noEmit",
     "clean": "hardhat clean",
     "check": "npm run build && npm run check:size && npm test && npm run typecheck"

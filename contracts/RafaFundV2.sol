@@ -10,8 +10,8 @@ import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.so
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {IAerodromeRouter} from "./interfaces/IAerodromeRouter.sol";
-import {IPriceOracle} from "./interfaces/IPriceOracle.sol";
+import {IRafaAssetRegistry} from "./interfaces/IRafaAssetRegistry.sol";
+import {ITradeAdapter} from "./interfaces/ITradeAdapter.sol";
 
 /// @title RafaFundV2
 /// @notice A USDC-accounted, ERC-4626-compatible fund whose shares represent a
@@ -27,7 +27,6 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     uint256 public constant BPS_DENOMINATOR = 10_000;
     uint16 public constant MAX_PERFORMANCE_FEE_BPS = 3_000;
     uint16 public constant MAX_TRADE_SLIPPAGE_BPS = 2_000;
-    uint48 public constant MAX_ORACLE_AGE = 7 days;
     uint8 public constant MAX_ASSETS = 10;
 
     bytes32 public constant TRADER_ROLE = keccak256("TRADER_ROLE");
@@ -38,7 +37,7 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         string symbol;
         string metadataURI;
         address accountingAsset;
-        address router;
+        address assetRegistry;
         address admin;
         address trader;
         address guardian;
@@ -52,14 +51,10 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
 
     struct AssetConfig {
         bool supported;
-        bool stablePair;
-        uint8 decimals;
-        uint48 maxPriceAge;
         uint16 maxExposureBps;
-        IPriceOracle oracle;
     }
 
-    IAerodromeRouter public immutable router;
+    IRafaAssetRegistry public immutable assetRegistry;
     uint8 public immutable accountingAssetDecimals;
     uint16 public immutable performanceFeeBps;
     uint16 public immutable maxTradeSlippageBps;
@@ -89,9 +84,12 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     error InsufficientAssets(uint256 actualAssets, uint256 minimumAssets);
     error AssetAlreadySupported(address assetToken);
     error AssetNotSupported(address assetToken);
+    error AssetAdmissionDisabled(address assetToken);
+    error AssetBuyingDisabled(address assetToken);
+    error AssetSellingDisabled(address assetToken);
+    error AssetPolicyNotConfigured(address assetToken);
     error AssetBalanceNotZero(address assetToken, uint256 balance);
     error MaximumAssetsReached();
-    error InvalidOracle(address oracle);
     error InvalidOraclePrice(address assetToken, uint256 price);
     error StaleOraclePrice(address assetToken, uint256 updatedAt, uint256 maxPriceAge);
     error InvalidTradePair(address tokenIn, address tokenOut);
@@ -101,18 +99,15 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     error AssetExposureAboveLimit(address assetToken, uint256 exposureBps, uint256 maximumExposureBps);
     error InsufficientLiquidity(uint256 requestedAssets, uint256 availableAssets);
     error CannotRecoverSupportedAsset(address assetToken);
+    error InvalidTradeInput(uint256 expectedAmount, uint256 actualAmount);
 
     event AssetAdded(
         address indexed assetToken,
         address indexed oracle,
-        uint48 maxPriceAge,
-        bool stablePair,
-        uint8 decimals,
+        address indexed adapter,
         uint16 maxExposureBps
     );
-    event AssetUpdated(
-        address indexed assetToken, address indexed oracle, uint48 maxPriceAge, bool stablePair, uint16 maxExposureBps
-    );
+    event AssetExposureUpdated(address indexed assetToken, uint16 previousMaxExposureBps, uint16 newMaxExposureBps);
     event AssetRemoved(address indexed assetToken);
     event TradeExecuted(
         address indexed trader, address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut
@@ -136,10 +131,10 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         AccessControlDefaultAdminRules(params.adminTransferDelay, params.admin)
     {
         if (
-            params.accountingAsset == address(0) || params.router == address(0) || params.admin == address(0)
+            params.accountingAsset == address(0) || params.assetRegistry == address(0) || params.admin == address(0)
                 || params.trader == address(0) || params.guardian == address(0) || params.feeRecipient == address(0)
         ) revert InvalidAddress();
-        if (params.accountingAsset.code.length == 0 || params.router.code.length == 0) revert InvalidAddress();
+        if (params.accountingAsset.code.length == 0 || params.assetRegistry.code.length == 0) revert InvalidAddress();
         if (params.performanceFeeBps > MAX_PERFORMANCE_FEE_BPS) revert InvalidFee(params.performanceFeeBps);
         if (params.maxTradeSlippageBps > MAX_TRADE_SLIPPAGE_BPS) {
             revert InvalidSlippage(params.maxTradeSlippageBps);
@@ -152,7 +147,8 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         uint8 assetDecimals = IERC20Metadata(params.accountingAsset).decimals();
         if (assetDecimals > 18) revert UnsupportedDecimals(assetDecimals);
 
-        router = IAerodromeRouter(params.router);
+        assetRegistry = IRafaAssetRegistry(params.assetRegistry);
+        if (assetRegistry.accountingAsset() != params.accountingAsset) revert InvalidAddress();
         accountingAssetDecimals = assetDecimals;
         performanceFeeBps = params.performanceFeeBps;
         maxTradeSlippageBps = params.maxTradeSlippageBps;
@@ -170,14 +166,13 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     // ---------------------------------------------------------------------
 
     function totalAssets() public view override returns (uint256 totalValue) {
-        totalValue = IERC20(asset()).balanceOf(address(this));
+        return _calculateTotalAssets(false);
+    }
 
-        uint256 length = _activeAssets.length;
-        for (uint256 i; i < length; ++i) {
-            address assetToken = _activeAssets[i];
-            uint256 balance = IERC20(assetToken).balanceOf(address(this));
-            if (balance != 0) totalValue += _valueInAccountingAsset(assetToken, balance);
-        }
+    /// @notice Portfolio value using the stricter freshness threshold required
+    ///         for deposits, cash exits, fees, and trades.
+    function settlementTotalAssets() public view returns (uint256 totalValue) {
+        return _calculateTotalAssets(true);
     }
 
     function maxDeposit(address) public view override returns (uint256) {
@@ -328,10 +323,10 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         if (amountIn == 0) revert InvalidAmount();
         if (deadline < block.timestamp) revert TradeDeadlineExpired(deadline);
 
-        (bool stablePair, uint256 oracleMinimum) = _validateTrade(tokenIn, tokenOut, amountIn);
+        (address adapter, uint256 oracleMinimum) = _validateTrade(tokenIn, tokenOut, amountIn);
         if (minAmountOut < oracleMinimum) revert TradeSlippageTooHigh(minAmountOut, oracleMinimum);
 
-        amountOut = _executeTrade(tokenIn, tokenOut, amountIn, minAmountOut, deadline, stablePair);
+        amountOut = _executeTrade(tokenIn, tokenOut, amountIn, minAmountOut, deadline, adapter);
         if (tokenIn == asset()) _enforceExposure(tokenOut);
         emit TradeExecuted(_msgSender(), tokenIn, tokenOut, amountIn, amountOut);
     }
@@ -340,59 +335,33 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     // Fund administration
     // ---------------------------------------------------------------------
 
-    function addAsset(address assetToken, address oracle, uint48 maxPriceAge, bool stablePair, uint16 maxExposureBps)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
-        if (assetToken == address(0) || assetToken == asset() || assetToken.code.length == 0) revert InvalidAddress();
+    function addAsset(address assetToken, uint16 maxExposureBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (assetToken == address(0) || assetToken == asset()) revert InvalidAddress();
         if (_assetConfigs[assetToken].supported) revert AssetAlreadySupported(assetToken);
         if (_activeAssets.length >= MAX_ASSETS) revert MaximumAssetsReached();
 
-        uint8 tokenDecimals = IERC20Metadata(assetToken).decimals();
-        if (tokenDecimals > 18) revert UnsupportedDecimals(tokenDecimals);
-        _validateOracle(oracle, maxPriceAge);
+        IRafaAssetRegistry.AssetPolicy memory policy = _assetPolicy(assetToken);
+        if (!policy.admissionEnabled) revert AssetAdmissionDisabled(assetToken);
         _validateExposure(maxExposureBps);
+        if (maxExposureBps > policy.maxExposureBps) revert InvalidRiskLimit(maxExposureBps);
+        _freshPrice(assetToken, policy, policy.tradeMaxAge);
 
-        AssetConfig memory newConfig = AssetConfig({
-            supported: true,
-            stablePair: stablePair,
-            decimals: tokenDecimals,
-            maxPriceAge: maxPriceAge,
-            maxExposureBps: maxExposureBps,
-            oracle: IPriceOracle(oracle)
-        });
-        _freshPrice(assetToken, newConfig);
-        _assetConfigs[assetToken] = newConfig;
+        _assetConfigs[assetToken] = AssetConfig({supported: true, maxExposureBps: maxExposureBps});
         _activeAssets.push(assetToken);
         _assetIndexPlusOne[assetToken] = _activeAssets.length;
 
-        emit AssetAdded(assetToken, oracle, maxPriceAge, stablePair, tokenDecimals, maxExposureBps);
+        emit AssetAdded(assetToken, address(policy.oracle), policy.adapter, maxExposureBps);
     }
 
-    function updateAsset(address assetToken, address oracle, uint48 maxPriceAge, bool stablePair, uint16 maxExposureBps)
-        external
-        onlyRole(DEFAULT_ADMIN_ROLE)
-    {
+    function updateAssetExposure(address assetToken, uint16 maxExposureBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
         AssetConfig storage config = _assetConfigs[assetToken];
         if (!config.supported) revert AssetNotSupported(assetToken);
-        _validateOracle(oracle, maxPriceAge);
         _validateExposure(maxExposureBps);
-
-        AssetConfig memory updatedConfig = AssetConfig({
-            supported: true,
-            stablePair: stablePair,
-            decimals: config.decimals,
-            maxPriceAge: maxPriceAge,
-            maxExposureBps: maxExposureBps,
-            oracle: IPriceOracle(oracle)
-        });
-        _freshPrice(assetToken, updatedConfig);
-
-        config.oracle = IPriceOracle(oracle);
-        config.maxPriceAge = maxPriceAge;
-        config.stablePair = stablePair;
+        IRafaAssetRegistry.AssetPolicy memory policy = _assetPolicy(assetToken);
+        if (maxExposureBps > policy.maxExposureBps) revert InvalidRiskLimit(maxExposureBps);
+        uint16 previousMaxExposureBps = config.maxExposureBps;
         config.maxExposureBps = maxExposureBps;
-        emit AssetUpdated(assetToken, oracle, maxPriceAge, stablePair, maxExposureBps);
+        emit AssetExposureUpdated(assetToken, previousMaxExposureBps, maxExposureBps);
     }
 
     function removeAsset(address assetToken) external onlyRole(DEFAULT_ADMIN_ROLE) {
@@ -495,6 +464,10 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         return _assetConfigs[assetToken];
     }
 
+    function getAssetPolicy(address assetToken) external view returns (IRafaAssetRegistry.AssetPolicy memory) {
+        return _assetPolicy(assetToken);
+    }
+
     // ---------------------------------------------------------------------
     // Internals
     // ---------------------------------------------------------------------
@@ -538,10 +511,10 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     }
 
     function _accruePerformanceFee() private returns (uint256 feeShares) {
+        uint256 managedAssets = settlementTotalAssets();
         uint256 supply = totalSupply();
         if (supply == 0 || performanceFeeBps == 0) return 0;
 
-        uint256 managedAssets = totalAssets();
         return _accruePerformanceFeeFromAssets(managedAssets, supply);
     }
 
@@ -549,7 +522,7 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         uint256 supply = totalSupply();
         if (supply == 0 || performanceFeeBps == 0) return 0;
 
-        try this.totalAssets() returns (uint256 managedAssets) {
+        try this.settlementTotalAssets() returns (uint256 managedAssets) {
             return _accruePerformanceFeeFromAssets(managedAssets, supply);
         } catch {
             emit PerformanceFeeAccrualSkipped();
@@ -583,12 +556,29 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         return Math.mulDiv(_toWad(managedAssets, accountingAssetDecimals), 1e18, supply);
     }
 
-    function _valueInAccountingAsset(address assetToken, uint256 amount) private view returns (uint256) {
-        AssetConfig memory config = _assetConfigs[assetToken];
-        if (!config.supported) revert AssetNotSupported(assetToken);
+    function _calculateTotalAssets(bool settlementPrice) private view returns (uint256 totalValue) {
+        totalValue = IERC20(asset()).balanceOf(address(this));
 
-        uint256 priceWad = _freshPrice(assetToken, config);
-        uint256 tokenAmountWad = _toWad(amount, config.decimals);
+        uint256 length = _activeAssets.length;
+        for (uint256 i; i < length; ++i) {
+            address assetToken = _activeAssets[i];
+            uint256 balance = IERC20(assetToken).balanceOf(address(this));
+            if (balance == 0) continue;
+
+            IRafaAssetRegistry.AssetPolicy memory policy = _assetPolicy(assetToken);
+            uint48 maxPriceAge = settlementPrice ? policy.tradeMaxAge : policy.valuationMaxAge;
+            totalValue += _valueInAccountingAsset(assetToken, balance, policy, maxPriceAge);
+        }
+    }
+
+    function _valueInAccountingAsset(
+        address assetToken,
+        uint256 amount,
+        IRafaAssetRegistry.AssetPolicy memory policy,
+        uint48 maxPriceAge
+    ) private view returns (uint256) {
+        uint256 priceWad = _freshPrice(assetToken, policy, maxPriceAge);
+        uint256 tokenAmountWad = _toWad(amount, policy.decimals);
         uint256 accountingValueWad = Math.mulDiv(tokenAmountWad, priceWad, 1e18);
         return _fromWad(accountingValueWad, accountingAssetDecimals);
     }
@@ -596,7 +586,7 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     function _validateTrade(address tokenIn, address tokenOut, uint256 amountIn)
         private
         view
-        returns (bool stablePair, uint256 oracleMinimum)
+        returns (address adapter, uint256 oracleMinimum)
     {
         bool inputIsAccountingAsset = tokenIn == asset();
         bool outputIsAccountingAsset = tokenOut == asset();
@@ -605,15 +595,22 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         address managedToken = inputIsAccountingAsset ? tokenOut : tokenIn;
         AssetConfig memory config = _assetConfigs[managedToken];
         if (!config.supported) revert AssetNotSupported(managedToken);
+        IRafaAssetRegistry.AssetPolicy memory policy = _assetPolicy(managedToken);
+        if (inputIsAccountingAsset && !policy.buyEnabled) revert AssetBuyingDisabled(managedToken);
+        if (outputIsAccountingAsset && !policy.sellEnabled) revert AssetSellingDisabled(managedToken);
 
-        uint256 tradeValue = inputIsAccountingAsset ? amountIn : _valueInAccountingAsset(tokenIn, amountIn);
-        uint256 maximumTradeValue = Math.mulDiv(totalAssets(), maxTradeValueBps, BPS_DENOMINATOR);
+        uint256 tradeValue = inputIsAccountingAsset
+            ? amountIn
+            : _valueInAccountingAsset(tokenIn, amountIn, policy, policy.tradeMaxAge);
+        uint256 maximumTradeValue = Math.mulDiv(settlementTotalAssets(), maxTradeValueBps, BPS_DENOMINATOR);
         if (tradeValue > maximumTradeValue) revert TradeValueAboveLimit(tradeValue, maximumTradeValue);
 
-        uint256 expectedOut = inputIsAccountingAsset ? _amountFromAccountingAsset(tokenOut, amountIn) : tradeValue;
+        uint256 expectedOut = inputIsAccountingAsset
+            ? _amountFromAccountingAsset(tokenOut, amountIn, policy, policy.tradeMaxAge)
+            : tradeValue;
         oracleMinimum =
             Math.mulDiv(expectedOut, BPS_DENOMINATOR - maxTradeSlippageBps, BPS_DENOMINATOR, Math.Rounding.Ceil);
-        stablePair = config.stablePair;
+        adapter = policy.adapter;
     }
 
     function _executeTrade(
@@ -622,54 +619,69 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         uint256 amountIn,
         uint256 minAmountOut,
         uint256 deadline,
-        bool stablePair
+        address adapter
     ) private returns (uint256 amountOut) {
-        IERC20(tokenIn).forceApprove(address(router), amountIn);
+        uint256 inputBalanceBefore = IERC20(tokenIn).balanceOf(address(this));
+        uint256 outputBalanceBefore = IERC20(tokenOut).balanceOf(address(this));
+        IERC20(tokenIn).forceApprove(adapter, amountIn);
 
-        IAerodromeRouter.Route[] memory routes = new IAerodromeRouter.Route[](1);
-        routes[0] =
-            IAerodromeRouter.Route({from: tokenIn, to: tokenOut, stable: stablePair, factory: router.defaultFactory()});
+        ITradeAdapter(adapter).swapExactInput(
+            tokenIn, tokenOut, amountIn, minAmountOut, address(this), deadline
+        );
+        IERC20(tokenIn).forceApprove(adapter, 0);
 
-        uint256[] memory amounts =
-            router.swapExactTokensForTokens(amountIn, minAmountOut, routes, address(this), deadline);
-        amountOut = amounts[amounts.length - 1];
-        IERC20(tokenIn).forceApprove(address(router), 0);
+        uint256 inputBalanceAfter = IERC20(tokenIn).balanceOf(address(this));
+        uint256 actualInput = inputBalanceBefore - inputBalanceAfter;
+        if (actualInput != amountIn) revert InvalidTradeInput(amountIn, actualInput);
+
+        amountOut = IERC20(tokenOut).balanceOf(address(this)) - outputBalanceBefore;
+        if (amountOut < minAmountOut) revert InsufficientAssets(amountOut, minAmountOut);
     }
 
     function _enforceExposure(address assetToken) private view {
         AssetConfig memory config = _assetConfigs[assetToken];
-        uint256 managedAssets = totalAssets();
+        uint256 managedAssets = settlementTotalAssets();
         if (managedAssets == 0) return;
 
-        uint256 assetValue = _valueInAccountingAsset(assetToken, IERC20(assetToken).balanceOf(address(this)));
+        IRafaAssetRegistry.AssetPolicy memory policy = _assetPolicy(assetToken);
+        uint256 effectiveMaximum = Math.min(uint256(config.maxExposureBps), uint256(policy.maxExposureBps));
+        uint256 assetValue = _valueInAccountingAsset(
+            assetToken, IERC20(assetToken).balanceOf(address(this)), policy, policy.tradeMaxAge
+        );
         uint256 exposureBps = Math.mulDiv(assetValue, BPS_DENOMINATOR, managedAssets, Math.Rounding.Ceil);
-        if (exposureBps > config.maxExposureBps) {
-            revert AssetExposureAboveLimit(assetToken, exposureBps, config.maxExposureBps);
+        if (exposureBps > effectiveMaximum) {
+            revert AssetExposureAboveLimit(assetToken, exposureBps, effectiveMaximum);
         }
     }
 
-    function _amountFromAccountingAsset(address assetToken, uint256 accountingAmount) private view returns (uint256) {
-        AssetConfig memory config = _assetConfigs[assetToken];
-        if (!config.supported) revert AssetNotSupported(assetToken);
-
-        uint256 priceWad = _freshPrice(assetToken, config);
+    function _amountFromAccountingAsset(
+        address assetToken,
+        uint256 accountingAmount,
+        IRafaAssetRegistry.AssetPolicy memory policy,
+        uint48 maxPriceAge
+    ) private view returns (uint256) {
+        uint256 priceWad = _freshPrice(assetToken, policy, maxPriceAge);
         uint256 accountingAmountWad = _toWad(accountingAmount, accountingAssetDecimals);
         uint256 tokenAmountWad = Math.mulDiv(accountingAmountWad, 1e18, priceWad);
-        return _fromWad(tokenAmountWad, config.decimals);
+        return _fromWad(tokenAmountWad, policy.decimals);
     }
 
-    function _freshPrice(address assetToken, AssetConfig memory config) private view returns (uint256 priceWad) {
+    function _freshPrice(address assetToken, IRafaAssetRegistry.AssetPolicy memory policy, uint48 maxPriceAge)
+        private
+        view
+        returns (uint256 priceWad)
+    {
         uint256 updatedAt;
-        (priceWad, updatedAt) = config.oracle.latestPrice();
+        (priceWad, updatedAt) = policy.oracle.latestPrice();
         if (priceWad == 0) revert InvalidOraclePrice(assetToken, priceWad);
-        if (updatedAt == 0 || updatedAt > block.timestamp || block.timestamp - updatedAt > config.maxPriceAge) {
-            revert StaleOraclePrice(assetToken, updatedAt, config.maxPriceAge);
+        if (updatedAt == 0 || updatedAt > block.timestamp || block.timestamp - updatedAt > maxPriceAge) {
+            revert StaleOraclePrice(assetToken, updatedAt, maxPriceAge);
         }
     }
 
-    function _validateOracle(address oracle, uint48 maxPriceAge) private view {
-        if (oracle == address(0) || oracle.code.length == 0) revert InvalidOracle(oracle);
-        if (maxPriceAge == 0 || maxPriceAge > MAX_ORACLE_AGE) revert InvalidOracle(oracle);
+    function _assetPolicy(address assetToken) private view returns (IRafaAssetRegistry.AssetPolicy memory policy) {
+        policy = assetRegistry.getAssetPolicy(assetToken);
+        if (!policy.configured) revert AssetPolicyNotConfigured(assetToken);
     }
 
     function _validateExposure(uint16 maxExposureBps) private pure {

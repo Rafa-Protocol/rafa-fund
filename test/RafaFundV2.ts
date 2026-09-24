@@ -19,15 +19,34 @@ async function deploySystem(overrides: Record<string, unknown> = {}) {
   const weth = await ethers.deployContract("MockERC20", ["Wrapped Ether", "WETH", 18]);
   const unsupported = await ethers.deployContract("MockERC20", ["Unsupported", "NOPE", 18]);
   const router = await ethers.deployContract("MockAerodromeRouter");
+  const adapter = await ethers.deployContract("AerodromeAdapter", [
+    owner.address,
+    await usdc.getAddress(),
+    await router.getAddress(),
+  ]);
+  const registry = await ethers.deployContract("RafaAssetRegistry", [owner.address, await usdc.getAddress()]);
   const timestamp = await latestTimestamp();
   const wethOracle = await ethers.deployContract("MockPriceOracle", [2_000n * WAD, timestamp]);
+
+  await adapter.configureRoute(await weth.getAddress(), false, ethers.ZeroAddress);
+  await registry.configureAsset(
+    await weth.getAddress(),
+    18,
+    await wethOracle.getAddress(),
+    DAY,
+    DAY,
+    7_000,
+    await adapter.getAddress(),
+    ethers.encodeBytes32String("CRYPTO"),
+    ethers.encodeBytes32String("WETH"),
+  );
 
   const params = {
     name: "RAFA Balanced Fund",
     symbol: "rBAL",
     metadataURI: "ipfs://rafa-balanced",
     accountingAsset: await usdc.getAddress(),
-    router: await router.getAddress(),
+    assetRegistry: await registry.getAddress(),
     admin: owner.address,
     trader: trader.address,
     guardian: guardian.address,
@@ -41,7 +60,7 @@ async function deploySystem(overrides: Record<string, unknown> = {}) {
   };
 
   const fund = await ethers.deployContract("RafaFundV2", [params]);
-  await fund.addAsset(await weth.getAddress(), await wethOracle.getAddress(), DAY, false, 7_000);
+  await fund.addAsset(await weth.getAddress(), 7_000);
 
   await usdc.mint(investor.address, ethers.parseUnits("1000000", 6));
   await usdc.connect(investor).approve(await fund.getAddress(), ethers.MaxUint256);
@@ -63,10 +82,183 @@ async function deploySystem(overrides: Record<string, unknown> = {}) {
     ethers.parseUnits("1", 18),
   );
 
-  return { owner, trader, guardian, feeRecipient, investor, other, usdc, weth, unsupported, router, wethOracle, fund };
+  return {
+    owner,
+    trader,
+    guardian,
+    feeRecipient,
+    investor,
+    other,
+    usdc,
+    weth,
+    unsupported,
+    router,
+    adapter,
+    registry,
+    wethOracle,
+    fund,
+  };
 }
 
 describe("RafaFundV2", function () {
+  it("admits only protocol-listed assets and keeps fund owners out of allowlist administration", async function () {
+    const { owner, trader, other, fund, usdc, unsupported, router, adapter, registry, wethOracle } =
+      await deploySystem();
+
+    await expect(fund.connect(trader).addAsset(await unsupported.getAddress(), 1_000)).to.be.revertedWithCustomError(
+      fund,
+      "AccessControlUnauthorizedAccount",
+    );
+    await expect(fund.connect(owner).addAsset(await unsupported.getAddress(), 1_000)).to.be.revertedWithCustomError(
+      fund,
+      "AssetPolicyNotConfigured",
+    );
+
+    const otherAccountingAsset = await ethers.deployContract("MockERC20", ["Other USD", "oUSD", 6]);
+    const mismatchedAdapter = await ethers.deployContract("AerodromeAdapter", [
+      owner.address,
+      await otherAccountingAsset.getAddress(),
+      await router.getAddress(),
+    ]);
+    await expect(
+      registry.configureAsset(
+        await unsupported.getAddress(),
+        18,
+        await wethOracle.getAddress(),
+        DAY,
+        DAY,
+        1_000,
+        await mismatchedAdapter.getAddress(),
+        ethers.encodeBytes32String("EQUITY"),
+        ethers.encodeBytes32String("ISSUER"),
+      ),
+    ).to.be.revertedWithCustomError(registry, "InvalidAddress");
+    expect(await registry.accountingAsset()).to.equal(await usdc.getAddress());
+
+    expect(await ethers.provider.getCode(other.address)).to.equal("0x");
+    await registry.configureAsset(
+      other.address,
+      18,
+      await wethOracle.getAddress(),
+      DAY,
+      DAY,
+      1_000,
+      await adapter.getAddress(),
+      ethers.encodeBytes32String("EQUITY"),
+      ethers.encodeBytes32String("COINBASE"),
+    );
+
+    await expect(fund.connect(owner).addAsset(other.address, 1_000))
+      .to.emit(fund, "AssetAdded")
+      .withArgs(other.address, await wethOracle.getAddress(), await adapter.getAddress(), 1_000);
+  });
+  it("lets the protocol halt buys while preserving an orderly sell-only unwind", async function () {
+    const { trader, investor, other, fund, usdc, weth, registry } = await deploySystem();
+    await fund.connect(investor).deposit(ethers.parseUnits("10000", 6), investor.address);
+
+    await expect(
+      registry.connect(other).setAssetStatus(await weth.getAddress(), false, false, true),
+    ).to.be.revertedWithCustomError(registry, "OwnableUnauthorizedAccount");
+
+    await fund.connect(trader).trade(
+      await usdc.getAddress(),
+      await weth.getAddress(),
+      ethers.parseUnits("2000", 6),
+      ethers.parseUnits("0.99", 18),
+      (await latestTimestamp()) + 600,
+    );
+
+    await registry.setAssetStatus(await weth.getAddress(), false, false, true);
+    await expect(
+      fund.connect(trader).trade(
+        await usdc.getAddress(),
+        await weth.getAddress(),
+        ethers.parseUnits("100", 6),
+        ethers.parseUnits("0.049", 18),
+        (await latestTimestamp()) + 600,
+      ),
+    ).to.be.revertedWithCustomError(fund, "AssetBuyingDisabled");
+
+    await expect(
+      fund.connect(trader).trade(
+        await weth.getAddress(),
+        await usdc.getAddress(),
+        ethers.parseUnits("0.5", 18),
+        ethers.parseUnits("990", 6),
+        (await latestTimestamp()) + 600,
+      ),
+    ).to.emit(fund, "TradeExecuted");
+
+    await registry.setAssetStatus(await weth.getAddress(), false, false, false);
+    await expect(
+      fund.connect(trader).trade(
+        await weth.getAddress(),
+        await usdc.getAddress(),
+        ethers.parseUnits("0.1", 18),
+        ethers.parseUnits("190", 6),
+        (await latestTimestamp()) + 600,
+      ),
+    ).to.be.revertedWithCustomError(fund, "AssetSellingDisabled");
+  });
+
+  it("applies protocol exposure reductions to funds that already admitted the asset", async function () {
+    const { trader, investor, fund, usdc, weth, adapter, registry, wethOracle } = await deploySystem();
+    await fund.connect(investor).deposit(ethers.parseUnits("10000", 6), investor.address);
+
+    await registry.configureAsset(
+      await weth.getAddress(),
+      18,
+      await wethOracle.getAddress(),
+      DAY,
+      DAY,
+      1_000,
+      await adapter.getAddress(),
+      ethers.encodeBytes32String("CRYPTO"),
+      ethers.encodeBytes32String("WETH"),
+    );
+
+    await expect(
+      fund.connect(trader).trade(
+        await usdc.getAddress(),
+        await weth.getAddress(),
+        ethers.parseUnits("2000", 6),
+        ethers.parseUnits("0.99", 18),
+        (await latestTimestamp()) + 600,
+      ),
+    ).to.be.revertedWithCustomError(fund, "AssetExposureAboveLimit");
+  });
+
+  it("uses stricter settlement freshness while retaining longer-lived read-only NAV", async function () {
+    const { investor, fund, weth, adapter, registry, wethOracle } = await deploySystem();
+    const shares = ethers.parseUnits("1000", 18);
+    await fund.connect(investor).deposit(ethers.parseUnits("1000", 6), investor.address);
+    await weth.mint(await fund.getAddress(), ethers.parseUnits("1", 18));
+
+    await registry.configureAsset(
+      await weth.getAddress(),
+      18,
+      await wethOracle.getAddress(),
+      DAY,
+      60,
+      7_000,
+      await adapter.getAddress(),
+      ethers.encodeBytes32String("CRYPTO"),
+      ethers.encodeBytes32String("WETH"),
+    );
+    await wethOracle.setPrice(2_000n * WAD, (await latestTimestamp()) - 120);
+
+    expect(await fund.totalAssets()).to.equal(ethers.parseUnits("3000", 6));
+    await expect(fund.settlementTotalAssets()).to.be.revertedWithCustomError(fund, "StaleOraclePrice");
+    await expect(fund.connect(investor).deposit(1n, investor.address)).to.be.revertedWithCustomError(
+      fund,
+      "StaleOraclePrice",
+    );
+    await expect(fund.connect(investor).redeemInKind(shares, investor.address, investor.address)).to.emit(
+      fund,
+      "PerformanceFeeAccrualSkipped",
+    );
+  });
+
   it("mints 18-decimal fund shares for USDC deposits and enforces user slippage", async function () {
     const { investor, fund } = await deploySystem();
     const assets = ethers.parseUnits("10000", 6);
@@ -166,9 +358,7 @@ describe("RafaFundV2", function () {
       ),
     ).to.be.revertedWithCustomError(fund, "TradeValueAboveLimit");
 
-    await fund
-      .connect(owner)
-      .updateAsset(await weth.getAddress(), await (await ethers.deployContract("MockPriceOracle", [2_000n * WAD, await latestTimestamp()])).getAddress(), DAY, false, 1_000);
+    await fund.connect(owner).updateAssetExposure(await weth.getAddress(), 1_000);
 
     await expect(
       fund.connect(trader).trade(
@@ -286,11 +476,11 @@ describe("RafaFundV2", function () {
 
 describe("FundFactoryV2", function () {
   it("only lets the RAFA owner register configuration-matched official funds", async function () {
-    const { owner, other, fund, usdc, router } = await deploySystem();
+    const { owner, other, fund, usdc, registry } = await deploySystem();
     const factory = await ethers.deployContract("FundFactoryV2", [
       owner.address,
       await usdc.getAddress(),
-      await router.getAddress(),
+      await registry.getAddress(),
       2_000,
     ]);
 
@@ -318,16 +508,20 @@ describe("FundFactoryV2", function () {
     );
   });
 
-  it("rejects funds with a different accounting asset, router or excessive performance fee", async function () {
-    const { owner, trader, guardian, feeRecipient, usdc, router } = await deploySystem();
+  it("rejects funds with a different accounting asset, registry or excessive performance fee", async function () {
+    const { owner, trader, guardian, feeRecipient, usdc, registry } = await deploySystem();
     const alternateUsdc = await ethers.deployContract("MockERC20", ["Other USD", "oUSD", 6]);
+    const alternateRegistry = await ethers.deployContract("RafaAssetRegistry", [
+      owner.address,
+      await alternateUsdc.getAddress(),
+    ]);
     const mismatchedFund = await ethers.deployContract("RafaFundV2", [
       {
         name: "Mismatched",
         symbol: "MIS",
         metadataURI: "ipfs://mismatch",
         accountingAsset: await alternateUsdc.getAddress(),
-        router: await router.getAddress(),
+        assetRegistry: await alternateRegistry.getAddress(),
         admin: owner.address,
         trader: trader.address,
         guardian: guardian.address,
@@ -345,7 +539,7 @@ describe("FundFactoryV2", function () {
         symbol: "HIGH",
         metadataURI: "ipfs://high-fee",
         accountingAsset: await usdc.getAddress(),
-        router: await router.getAddress(),
+        assetRegistry: await registry.getAddress(),
         admin: owner.address,
         trader: trader.address,
         guardian: guardian.address,
@@ -360,7 +554,7 @@ describe("FundFactoryV2", function () {
     const factory = await ethers.deployContract("FundFactoryV2", [
       owner.address,
       await usdc.getAddress(),
-      await router.getAddress(),
+      await registry.getAddress(),
       2_000,
     ]);
 
@@ -372,6 +566,59 @@ describe("FundFactoryV2", function () {
       factory,
       "PerformanceFeeAboveMaximum",
     );
+  });
+});
+
+describe("Chain execution adapters", function () {
+  it("executes an owner-approved Ethereum Uniswap V3 pool and rejects other assets", async function () {
+    const [owner, trader] = await ethers.getSigners();
+    const usdc = await ethers.deployContract("MockERC20", ["USD Coin", "USDC", 6]);
+    const equity = await ethers.deployContract("MockERC20", ["Tokenized Equity", "EQTY", 18]);
+    const other = await ethers.deployContract("MockERC20", ["Other", "OTHER", 18]);
+    const router = await ethers.deployContract("MockUniswapV3SwapRouter");
+    const adapter = await ethers.deployContract("UniswapV3Adapter", [
+      owner.address,
+      await usdc.getAddress(),
+      await router.getAddress(),
+    ]);
+
+    await expect(adapter.connect(trader).configurePool(await equity.getAddress(), 500)).to.be.revertedWithCustomError(
+      adapter,
+      "OwnableUnauthorizedAccount",
+    );
+    await adapter.configurePool(await equity.getAddress(), 500);
+    await router.setRate(
+      await usdc.getAddress(),
+      await equity.getAddress(),
+      500,
+      ethers.parseUnits("1", 18),
+      ethers.parseUnits("100", 6),
+    );
+
+    await usdc.mint(trader.address, ethers.parseUnits("1000", 6));
+    await equity.mint(await router.getAddress(), ethers.parseUnits("100", 18));
+    await usdc.connect(trader).approve(await adapter.getAddress(), ethers.MaxUint256);
+
+    await adapter.connect(trader).swapExactInput(
+      await usdc.getAddress(),
+      await equity.getAddress(),
+      ethers.parseUnits("100", 6),
+      ethers.parseUnits("0.99", 18),
+      trader.address,
+      (await latestTimestamp()) + 600,
+    );
+    expect(await equity.balanceOf(trader.address)).to.equal(ethers.parseUnits("1", 18));
+
+    await expect(
+      adapter.connect(trader).swapExactInput(
+        await usdc.getAddress(),
+        await other.getAddress(),
+        ethers.parseUnits("1", 6),
+        1,
+        trader.address,
+        (await latestTimestamp()) + 600,
+      ),
+    ).to.be.revertedWithCustomError(adapter, "PoolNotConfigured");
   });
 });
 

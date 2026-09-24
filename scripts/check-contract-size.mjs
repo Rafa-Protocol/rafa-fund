@@ -8,6 +8,9 @@ const limits = {
 const artifacts = [
   "artifacts/contracts/RafaFundV2.sol/RafaFundV2.json",
   "artifacts/contracts/FundFactoryV2.sol/FundFactoryV2.json",
+  "artifacts/contracts/RafaAssetRegistry.sol/RafaAssetRegistry.json",
+  "artifacts/contracts/adapters/AerodromeAdapter.sol/AerodromeAdapter.json",
+  "artifacts/contracts/adapters/UniswapV3Adapter.sol/UniswapV3Adapter.json",
   "artifacts/contracts/oracles/ChainlinkPriceOracle.sol/ChainlinkPriceOracle.json",
 ];
 

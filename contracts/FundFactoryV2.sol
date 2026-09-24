@@ -17,7 +17,7 @@ contract FundFactoryV2 is Ownable2Step {
 
     uint16 public immutable maximumPerformanceFeeBps;
     address public immutable accountingAsset;
-    address public immutable router;
+    address public immutable assetRegistry;
 
     address[] private _funds;
     mapping(address fund => bool registered) public isFund;
@@ -40,19 +40,24 @@ contract FundFactoryV2 is Ownable2Step {
     );
     event FundStatusUpdated(address indexed fund, bool active);
 
-    constructor(address initialOwner, address accountingAsset_, address router_, uint16 maximumPerformanceFeeBps_)
+    constructor(
+        address initialOwner,
+        address accountingAsset_,
+        address assetRegistry_,
+        uint16 maximumPerformanceFeeBps_
+    )
         Ownable(initialOwner)
     {
-        if (initialOwner == address(0) || accountingAsset_ == address(0) || router_ == address(0)) {
+        if (initialOwner == address(0) || accountingAsset_ == address(0) || assetRegistry_ == address(0)) {
             revert InvalidAddress();
         }
-        if (accountingAsset_.code.length == 0 || router_.code.length == 0) revert InvalidAddress();
+        if (accountingAsset_.code.length == 0 || assetRegistry_.code.length == 0) revert InvalidAddress();
         if (maximumPerformanceFeeBps_ > ABSOLUTE_MAX_PERFORMANCE_FEE_BPS) {
             revert InvalidMaximumPerformanceFee(maximumPerformanceFeeBps_);
         }
 
         accountingAsset = accountingAsset_;
-        router = router_;
+        assetRegistry = assetRegistry_;
         maximumPerformanceFeeBps = maximumPerformanceFeeBps_;
     }
 
@@ -63,7 +68,7 @@ contract FundFactoryV2 is Ownable2Step {
         RafaFundV2 candidate = RafaFundV2(fund);
         if (
             candidate.IMPLEMENTATION_ID() != EXPECTED_FUND_IMPLEMENTATION_ID || candidate.asset() != accountingAsset
-                || address(candidate.router()) != router
+                || address(candidate.assetRegistry()) != assetRegistry
         ) {
             revert InvalidFundConfiguration(fund);
         }

@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "network": "Base",
+  "chainId": 8453,
+  "status": "discovery-only",
+  "lastVerified": "2026-09-24",
+  "source": "https://docs.base.org/build-on-base/integrate-defi/list-tokenized-stocks",
+  "b20Registry": "0x3f3E8cf41cdd3b1D118c16471aB0113DfDDd5CaD",
+  "notes": "Candidate metadata only. An entry is not approved until the RAFA Safe configures its registry policy and execution route.",
+  "candidates": [
+    {
+      "symbol": "AAPLc",
+      "underlyingSymbol": "AAPL",
+      "token": "0xb200000000000000000000C2e324d24d7eEcd1fb",
+      "decimals": 8,
+      "priceFeedUsd": "0x787f13dEa48Db0897CbCDD985de77809D837F988",
+      "assetClass": "TOKENIZED_EQUITY",
+      "issuerId": "COINBASE_B20",
+      "protocolStatus": "candidate"
+    },
+    {
+      "symbol": "AMZNc",
+      "underlyingSymbol": "AMZN",
+      "token": "0xb200000000000000000000d9192b6B456483C2E8",
+      "decimals": 8,
+      "priceFeedUsd": "0x06A8E4b3aBB3B7543d8396FB2B763d22820cB295",
+      "assetClass": "TOKENIZED_EQUITY",
+      "issuerId": "COINBASE_B20",
+      "protocolStatus": "candidate"
+    },
+    {
+      "symbol": "GOOGLc",
+      "underlyingSymbol": "GOOGL",
+      "token": "0xb2000000000000000000002D0BA3164cc74f58B7",
+      "decimals": 8,
+      "priceFeedUsd": "0x5bF49E0ffA937CE2FfF033c739aD7C634c4D34F2",
+      "assetClass": "TOKENIZED_EQUITY",
+      "issuerId": "COINBASE_B20",
+      "protocolStatus": "candidate"
+    },
+    {
+      "symbol": "METAc",
+      "underlyingSymbol": "META",
+      "token": "0xb2000000000000000000008bC8786B856E61707C",
+      "decimals": 8,
+      "priceFeedUsd": "0x6526aE6797A76123638b863AeE4dD27Ba4E4b27D",
+      "assetClass": "TOKENIZED_EQUITY",
+      "issuerId": "COINBASE_B20",
+      "protocolStatus": "candidate"
+    },
+    {
+      "symbol": "MSFTc",
+      "underlyingSymbol": "MSFT",
+      "token": "0xB200000000000000000000Ab99cFa739E253872B",
+      "decimals": 8,
+      "priceFeedUsd": "0xeB10A6c9aa7E537aEd766C08c35Dae35B321b18c",
+      "assetClass": "TOKENIZED_EQUITY",
+      "issuerId": "COINBASE_B20",
+      "protocolStatus": "candidate"
+    },
+    {
+      "symbol": "MSTRc",
+      "underlyingSymbol": "MSTR",
+      "token": "0xb2000000000000000000004884b426556b92883d",
+      "decimals": 8,
+      "priceFeedUsd": "0xB3cE282CD188b35DA0E38D8Bc7d58e33173D202a",
+      "assetClass": "TOKENIZED_EQUITY",
+      "issuerId": "COINBASE_B20",
+      "protocolStatus": "candidate"
+    },
+    {
+      "symbol": "NVDAc",
+      "underlyingSymbol": "NVDA",
+      "token": "0xb20000000000000000000078ee7ce2fE4908108C",
+      "decimals": 8,
+      "priceFeedUsd": "0x04689a41629776563E6822F76f2e57D148d28513",
+      "assetClass": "TOKENIZED_EQUITY",
+      "issuerId": "COINBASE_B20",
+      "protocolStatus": "candidate"
+    },
+    {
+      "symbol": "SNDKc",
+      "underlyingSymbol": "SNDK",
+      "token": "0xb200000000000000000000397293Cb8cda9a10c5",
+      "decimals": 8,
+      "priceFeedUsd": "0x388b0dC46C0Fb05A74BeE0994fa5b02c6Fcca2eA",
+      "assetClass": "TOKENIZED_EQUITY",
+      "issuerId": "COINBASE_B20",
+      "protocolStatus": "candidate"
+    },
+    {
+      "symbol": "SPCXc",
+      "underlyingSymbol": "SPCX",
+      "token": "0xb2000000000000000000007b9fcbd005511aCBd5",
+      "decimals": 8,
+      "priceFeedUsd": "0x6A634B235903C4ad6376892180d6fF8612e3Fa68",
+      "assetClass": "TOKENIZED_EQUITY",
+      "issuerId": "COINBASE_B20",
+      "protocolStatus": "candidate"
+    },
+    {
+      "symbol": "TSLAc",
+      "underlyingSymbol": "TSLA",
+      "token": "0xb2000000000000000000001e800a7f5189430cD0",
+      "decimals": 8,
+      "priceFeedUsd": "0xFaf869185383a24F8cb00e27BdA6b63B9905DCb4",
+      "assetClass": "TOKENIZED_EQUITY",
+      "issuerId": "COINBASE_B20",
+      "protocolStatus": "candidate"
+    }
+  ]
+}
+

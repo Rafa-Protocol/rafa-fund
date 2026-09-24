@@ -5,7 +5,7 @@ export default buildModule("RafaFundV2Module", (m) => {
   const fundSymbol = m.getParameter("fundSymbol");
   const metadataURI = m.getParameter("metadataURI");
   const accountingAsset = m.getParameter("accountingAsset");
-  const router = m.getParameter("router");
+  const assetRegistry = m.getParameter("assetRegistry");
   const admin = m.getParameter("admin");
   const trader = m.getParameter("trader");
   const guardian = m.getParameter("guardian");
@@ -22,7 +22,7 @@ export default buildModule("RafaFundV2Module", (m) => {
       symbol: fundSymbol,
       metadataURI,
       accountingAsset,
-      router,
+      assetRegistry,
       admin,
       trader,
       guardian,

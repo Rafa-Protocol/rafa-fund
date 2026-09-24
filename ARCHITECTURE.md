@@ -6,84 +6,111 @@
 flowchart LR
     Investor[Investor wallet] -->|Deposit accounting asset| Fund[RafaFundV2]
     Fund -->|Mint ERC-20 shares| Investor
-    Investor -->|Redeem liquid or in kind| Fund
-    Trader[Restricted RAFA trader] -->|Guarded rebalances| Fund
-    Safe[RAFA admin multisig] -->|Assets, caps and roles| Fund
-    Guardian[Pause guardian] -->|Pause deposits or trading| Fund
-    Oracle[Chainlink adapters] -->|Fresh NAV prices| Fund
-    Router[Aerodrome router] <-->|Supported swaps| Fund
-    Registry[FundFactoryV2 registry] -->|Official fund list| Fund
+    Investor -->|Cash or in-kind redemption| Fund
+    Trader[Restricted RAFA trader] -->|Guarded rebalance| Fund
+    Safe[RAFA Safe] --> Registry[RafaAssetRegistry]
+    Safe -->|Fund roles and stricter caps| Fund
+    Guardian[Independent guardian] -->|Pause deposits or trading| Fund
+    Registry -->|Asset policy| Fund
+    Oracle[Reviewed price oracle] --> Registry
+    Registry --> Adapter[Chain-specific trade adapter]
+    Adapter --> Venue[Aerodrome or Uniswap V3]
+    Factory[FundFactoryV2] -->|Official fund list| Fund
 ```
 
-## Deployment and registry
+## Chain-local asset registry
 
-Each vault is an immutable `RafaFundV2` deployment. `FundFactoryV2` deliberately acts as a registry rather than embedding vault creation bytecode. This keeps both contracts below EVM size limits and avoids proxy upgrade authority.
+Base and Ethereum each receive an independent `RafaAssetRegistry`, owned by the
+RAFA Safe. A configured policy binds one token to:
 
-Only the registry owner can register a fund. Registration confirms the V2 implementation marker, the registry's accounting asset and Aerodrome router, and that the performance fee does not exceed the registry maximum. The marker is a compatibility check rather than proof of bytecode identity, so the owner must also verify the deployed bytecode and constructor arguments before registration. The registry owner should be a RAFA Safe multisig.
+- admission, buy, and sell status flags;
+- immutable-at-read token decimals;
+- separate NAV and settlement price-age limits;
+- a protocol-wide maximum exposure;
+- an `IPriceOracle` implementation and `ITradeAdapter` implementation; and
+- machine-readable asset-class and issuer identifiers.
+
+The split status flags support incident response. RAFA can prevent new funds
+from adding an asset, stop further buying, and keep selling enabled for an
+orderly unwind. Existing funds read the registry on each trade and valuation,
+so a protocol policy or exposure reduction applies without redeploying them.
+
+Discovery is explicitly off-chain. Catalog files do not configure the registry,
+and no discovery script has a Safe key or an automatic admission path.
+
+## Base B20 compatibility
+
+Coinbase B20 assets are native Base precompiles and may expose ERC-20 behavior
+without normal EVM bytecode. `RafaAssetRegistry` therefore does not require
+token bytecode, while it does require code at the configured oracle and adapter.
+Operational review must call token methods on a mainnet fork before admission.
+
+B20 prices incorporate a multiplier for dividends and stock splits. RAFA must
+use the official total-return-aware feed, not a generic spot-equity quote. A
+corporate-action or market-hours freeze stops `updatedAt` from advancing; the
+strict settlement age then blocks deposits, cash exits, fees, and trades. The
+RAFA monitor should disable admission/buys immediately when an issuer pause is
+detected. In-kind exits remain available.
+
+## Execution adapters
+
+The fund never calls a DEX directly. The registry selects a reviewed adapter for
+each asset, and the fund approves only the exact input amount for one call.
+
+- Base uses `AerodromeAdapter`, whose owner enables a direct stable or volatile
+  route between the accounting asset and one candidate asset.
+- Ethereum uses `UniswapV3Adapter`, whose owner enables a direct pool fee tier.
+
+Both adapters return output directly to the fund. The fund checks actual input
+spent, actual output received, deadline, oracle-relative slippage, per-trade NAV
+limit, and post-buy exposure. Adding another venue requires a new adapter that
+implements `ITradeAdapter`; fund bytecode does not change.
+
+## Deployment and official funds
+
+Each vault is an immutable `RafaFundV2`. `FundFactoryV2` is an official-fund
+registry instead of a bytecode factory, keeping contracts below EVM size limits
+and avoiding upgrade authority. Registration checks the V2 implementation
+marker, expected accounting asset, expected asset registry, and maximum
+performance fee. The Safe must also verify bytecode and constructor arguments;
+the marker alone is not proof of identity.
 
 ## Roles
 
-| Role | Intended holder | Authority |
+| Role | Initial holder | Authority |
 | --- | --- | --- |
-| Default admin | RAFA Safe | Manage assets, caps, roles, metadata and recovery of unsupported tokens. Admin transfer is two-step and delayed. |
-| Trader | Restricted automation key | Swap only between the accounting asset and supported assets within on-chain risk limits. |
-| Guardian | Independent operations key or Safe | Pause new deposits and trading. Only the admin can unpause. |
+| Asset registry owner | RAFA Safe | Protocol asset admission/status, oracle, adapter, freshness, and global cap. |
+| Fund default admin | RAFA Safe | Select permitted assets, stricter caps, roles, metadata, and unsupported-token recovery. |
+| Trader | Restricted RAFA automation key | Swap only between accounting asset and permitted assets within on-chain limits. |
+| Guardian | Independent operations key or Safe | Pause deposits and fund trading; only admin unpauses. |
+| Factory owner | RAFA Safe | Register and deactivate official funds. |
 | Fee recipient | RAFA treasury/Safe | Receive newly minted performance-fee shares. |
 
-The trader cannot transfer vault assets to an arbitrary recipient, change supported assets, change prices, or grant roles.
+Initially RAFA operates every fund and the Safe retains centralized policy
+control. The RAFA token is not required for deposits, manager permissions, or
+asset admission in this phase; governance can be introduced later without
+making it a tradable portfolio asset by default.
 
-## Deposits and shares
+## NAV, settlement, and exits
 
-The accounting asset is the ERC-4626 asset, initially expected to be USDC on Base. Fund shares use 18 decimals through ERC-4626's virtual-share offset.
+`totalAssets` values idle accounting tokens plus each active holding using the
+policy's NAV age. `settlementTotalAssets` uses the stricter trade age and is
+required before deposits, cash exits, fee crystallization, and trades. Invalid
+or stale data reverts instead of valuing an asset at zero.
 
-Deposits are valued against the full oracle-priced portfolio. The web application should call `previewDeposit` and submit `depositWithSlippage` with a user-approved `minSharesOut`. Deposits stop when paused or when the fund reaches its configured NAV cap.
+Standard ERC-4626 withdrawals use idle accounting-asset liquidity. `redeemInKind`
+burns shares and transfers a proportional slice of every held token without a
+DEX or oracle, including during price, venue, or pause incidents. Recipients may
+still be subject to issuer transfer restrictions.
 
-## NAV and pricing
-
-`totalAssets` returns the accounting-asset value of idle accounting tokens plus every active supported asset. Each asset has:
-
-- a price-oracle adapter;
-- a maximum permitted price age;
-- token decimals cached at configuration time;
-- an Aerodrome stable/volatile route flag; and
-- a maximum share of fund NAV.
-
-`ChainlinkPriceOracle` divides an asset/USD feed by the accounting-asset/USD feed. On Base it should also receive the official L2 sequencer uptime feed and a non-zero grace period. Stale or invalid data causes valuation-dependent operations to revert instead of silently valuing an asset at zero.
-
-## Trading and risk controls
-
-Every trade must:
-
-1. Be submitted by `TRADER_ROLE` while trading is active.
-2. Use the accounting asset as one side of the pair.
-3. Use a supported asset as the other side.
-4. Remain below the maximum fraction of current NAV allowed per trade.
-5. Set `minAmountOut` no lower than the oracle quote minus the fund's maximum slippage.
-6. Leave purchased-asset exposure below that asset's configured concentration limit.
-7. Send all output back to the vault.
-
-The transaction reverts atomically if any post-trade exposure check fails.
-
-## Performance fees
-
-Fees use a per-share high-water mark. When NAV per share exceeds the mark, the fund mints enough shares to the fee recipient to represent the configured percentage of profit. The high-water mark is then updated to the post-fee share price.
-
-Fees crystallize before standard deposits and redemptions and can also be crystallized permissionlessly. In-kind redemption attempts accrual first; if an oracle is unavailable, the redemption proceeds and emits `PerformanceFeeAccrualSkipped` so investor exit is not blocked.
-
-## Redemptions
-
-Standard ERC-4626 `withdraw` and `redeem` calls are limited to idle accounting-asset liquidity. The UI must use `maxWithdraw`/`maxRedeem` and `redeemWithSlippage`.
-
-`redeemInKind` burns shares and transfers a proportional amount of the accounting asset and every supported token. It does not require a DEX and continues to function during deposit/trading pauses and oracle failures.
+Performance fees mint shares only on profit above a per-share high-water mark.
+They accrue before standard entry/exit and can be called permissionlessly. If
+pricing is unavailable, in-kind redemption skips fee accrual and emits an event
+rather than trapping investors.
 
 ## Indexing
 
-The investor application can index:
-
-- registry `FundCreated` and `FundStatusUpdated` events;
-- ERC-4626 `Deposit` and `Withdraw` events;
-- ERC-20 fund-share transfers;
-- `TradeExecuted`, `InKindRedemption`, and `PerformanceFeeAccrued` events; and
-- periodic `totalAssets`, `totalSupply`, and `pricePerShareWad` snapshots.
-
-Historical fund performance should be derived from price per share, not raw TVL, so investor deposits and redemptions are not mistaken for returns.
+The investor application should index factory registration/status, ERC-4626
+deposits/withdrawals, fund-share transfers, trades, in-kind redemptions, fees,
+and registry policy/status events. Historical performance must use price per
+share rather than TVL so flows are not mistaken for returns.
