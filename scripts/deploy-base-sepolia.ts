@@ -87,7 +87,15 @@ const cashFund = await deploy("RafaFundV2", [
 const balancedFund = await deploy("RafaFundV2", [
   fundParams("RAFA Testnet Balanced", "rBAL", await testUsdc.getAddress(), await assetRegistry.getAddress()),
 ]);
+const conservativeFund = await deploy("RafaFundV2", [
+  fundParams("RAFA Testnet Conservative", "rSAFE", await testUsdc.getAddress(), await assetRegistry.getAddress()),
+]);
+const growthFund = await deploy("RafaFundV2", [
+  fundParams("RAFA Testnet Growth", "rGROW", await testUsdc.getAddress(), await assetRegistry.getAddress()),
+]);
 await confirm(balancedFund.addAsset(await testWeth.getAddress(), 7_000));
+await confirm(conservativeFund.addAsset(await testWeth.getAddress(), 3_000));
+await confirm(growthFund.addAsset(await testWeth.getAddress(), 7_000));
 
 const factory = await deploy("FundFactoryV2", [
   deployerAddress,
@@ -96,7 +104,9 @@ const factory = await deploy("FundFactoryV2", [
   2_000,
 ]);
 await confirm(factory.registerFund(await cashFund.getAddress()));
+await confirm(factory.registerFund(await conservativeFund.getAddress()));
 await confirm(factory.registerFund(await balancedFund.getAddress()));
+await confirm(factory.registerFund(await growthFund.getAddress()));
 
 await confirm(testUsdc.mint(deployerAddress, 20_000n * USDC));
 await confirm(testUsdc.mint(await router.getAddress(), 2_000_000n * USDC));
@@ -126,6 +136,10 @@ await confirm(cashFund.redeemWithSlippage(100n * WAD, deployerAddress, deployerA
 
 await confirm(testUsdc.approve(await balancedFund.getAddress(), 2_000n * USDC));
 await confirm(balancedFund.depositWithSlippage(2_000n * USDC, deployerAddress, 2_000n * WAD));
+await confirm(testUsdc.approve(await conservativeFund.getAddress(), 2_500n * USDC));
+await confirm(conservativeFund.depositWithSlippage(2_500n * USDC, deployerAddress, 2_500n * WAD));
+await confirm(testUsdc.approve(await growthFund.getAddress(), 3_000n * USDC));
+await confirm(growthFund.depositWithSlippage(3_000n * USDC, deployerAddress, 3_000n * WAD));
 const latestBlock = await ethers.provider.getBlock("latest");
 if (!latestBlock) throw new Error("Unable to read the Base Sepolia head block.");
 await confirm(
@@ -134,6 +148,33 @@ await confirm(
     await testWeth.getAddress(),
     400n * USDC,
     19n * WAD / 100n,
+    latestBlock.timestamp + 600,
+  ),
+);
+await confirm(
+  conservativeFund.trade(
+    await testUsdc.getAddress(),
+    await testWeth.getAddress(),
+    250n * USDC,
+    12n * WAD / 100n,
+    latestBlock.timestamp + 600,
+  ),
+);
+await confirm(
+  growthFund.trade(
+    await testUsdc.getAddress(),
+    await testWeth.getAddress(),
+    1_500n * USDC,
+    72n * WAD / 100n,
+    latestBlock.timestamp + 600,
+  ),
+);
+await confirm(
+  growthFund.trade(
+    await testUsdc.getAddress(),
+    await testWeth.getAddress(),
+    300n * USDC,
+    145n * WAD / 1_000n,
     latestBlock.timestamp + 600,
   ),
 );
@@ -154,14 +195,20 @@ const deployment = {
     assetRegistry: await assetRegistry.getAddress(),
     testWethOracle: await testWethOracle.getAddress(),
     cashFund: await cashFund.getAddress(),
+    conservativeFund: await conservativeFund.getAddress(),
     balancedFund: await balancedFund.getAddress(),
+    growthFund: await growthFund.getAddress(),
     fundFactory: await factory.getAddress(),
   },
   checks: {
     factoryFunds: Number(await factory.fundsLength()),
     cashFundTotalAssets: (await cashFund.totalAssets()).toString(),
+    conservativeFundTotalAssets: (await conservativeFund.totalAssets()).toString(),
+    conservativeFundTestWethBalance: (await testWeth.balanceOf(await conservativeFund.getAddress())).toString(),
     balancedFundTotalAssets: (await balancedFund.totalAssets()).toString(),
     balancedFundTestWethBalance: (await testWeth.balanceOf(await balancedFund.getAddress())).toString(),
+    growthFundTotalAssets: (await growthFund.totalAssets()).toString(),
+    growthFundTestWethBalance: (await testWeth.balanceOf(await growthFund.getAddress())).toString(),
   },
   warning: "Testnet-only deployment using unrestricted mock tokens, a mock router, and a fixed-price oracle.",
 };

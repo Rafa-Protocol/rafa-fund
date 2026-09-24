@@ -68,7 +68,7 @@ npm run typecheck
 ### Base Sepolia rehearsal
 
 The testnet deployment script creates unrestricted mock `tUSDC` and `tWETH`,
-a fixed-price test oracle, two sample funds, and an official-fund registry. It
+a fixed-price test oracle, four sample funds, and an official-fund registry. It
 also seeds deposits, one redemption, and one managed-asset trade so the web
 application has real onchain state to display.
 

@@ -28,6 +28,7 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     uint16 public constant MAX_PERFORMANCE_FEE_BPS = 3_000;
     uint16 public constant MAX_TRADE_SLIPPAGE_BPS = 2_000;
     uint8 public constant MAX_ASSETS = 10;
+    uint256 public constant IN_KIND_TRANSFER_GAS = 300_000;
 
     bytes32 public constant TRADER_ROLE = keccak256("TRADER_ROLE");
     bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
@@ -70,6 +71,8 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     address[] private _activeAssets;
     mapping(address assetToken => AssetConfig config) private _assetConfigs;
     mapping(address assetToken => uint256 indexPlusOne) private _assetIndexPlusOne;
+    mapping(address claimant => mapping(address token => uint256 amount)) public pendingClaims;
+    mapping(address token => uint256 amount) public totalPendingClaims;
 
     error InvalidAddress();
     error InvalidAmount();
@@ -100,6 +103,8 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     error InsufficientLiquidity(uint256 requestedAssets, uint256 availableAssets);
     error CannotRecoverSupportedAsset(address assetToken);
     error InvalidTradeInput(uint256 expectedAmount, uint256 actualAmount);
+    error UnauthorizedSelfCall();
+    error NoPendingClaim(address claimant, address token);
 
     event AssetAdded(
         address indexed assetToken,
@@ -113,6 +118,13 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         address indexed trader, address indexed tokenIn, address indexed tokenOut, uint256 amountIn, uint256 amountOut
     );
     event InKindRedemption(address indexed caller, address indexed owner, address indexed receiver, uint256 shares);
+    event InKindAssetDelivered(
+        address indexed claimant, address indexed token, address indexed recipient, uint256 amount
+    );
+    event PendingClaimCreated(address indexed claimant, address indexed token, uint256 amount);
+    event PendingClaimPaid(
+        address indexed claimant, address indexed token, address indexed recipient, uint256 amount
+    );
     event PerformanceFeeAccrued(
         address indexed recipient, uint256 feeAssetsWad, uint256 feeShares, uint256 highWaterMarkWad
     );
@@ -178,6 +190,7 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     function maxDeposit(address) public view override returns (uint256) {
         if (depositsPaused) return 0;
         uint256 currentAssets = totalAssets();
+        if (!_exposuresWithinLimits(currentAssets)) return 0;
         return currentAssets >= depositCap ? 0 : depositCap - currentAssets;
     }
 
@@ -187,14 +200,14 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
 
     function maxWithdraw(address owner) public view override returns (uint256) {
         uint256 ownerAssets = super.maxWithdraw(owner);
-        return Math.min(ownerAssets, IERC20(asset()).balanceOf(address(this)));
+        return Math.min(ownerAssets, _availableBalance(asset()));
     }
 
     function maxRedeem(address owner) public view override returns (uint256) {
         uint256 ownerShares = balanceOf(owner);
         if (ownerShares == 0) return 0;
 
-        uint256 liquidAssets = IERC20(asset()).balanceOf(address(this));
+        uint256 liquidAssets = _availableBalance(asset());
         uint256 managedAssets = totalAssets();
         if (liquidAssets >= managedAssets) return ownerShares;
 
@@ -279,22 +292,44 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         amounts = new uint256[](length + 1);
 
         tokens[0] = asset();
-        amounts[0] = Math.mulDiv(IERC20(asset()).balanceOf(address(this)), shares, supply);
+        amounts[0] = Math.mulDiv(_availableBalance(asset()), shares, supply);
 
         for (uint256 i; i < length; ++i) {
             address assetToken = _activeAssets[i];
             tokens[i + 1] = assetToken;
-            amounts[i + 1] = Math.mulDiv(IERC20(assetToken).balanceOf(address(this)), shares, supply);
+            amounts[i + 1] = Math.mulDiv(_availableBalance(assetToken), shares, supply);
         }
 
         _burn(owner, shares);
+        if (totalSupply() == 0) highWaterMarkWad = 1e18;
 
         for (uint256 i; i < tokens.length; ++i) {
-            if (amounts[i] != 0) IERC20(tokens[i]).safeTransfer(receiver, amounts[i]);
+            if (amounts[i] != 0) _deliverOrReserve(tokens[i], receiver, amounts[i]);
         }
 
-        if (totalSupply() == 0) highWaterMarkWad = 1e18;
         emit InKindRedemption(_msgSender(), owner, receiver, shares);
+    }
+
+    /// @notice Retries an in-kind asset delivery to any address selected by the
+    ///         claimant. This is useful for permissioned RWA tokens that may
+    ///         reject one wallet while accepting another eligible wallet.
+    function claimPending(address token, address recipient) external nonReentrant returns (uint256 amount) {
+        if (recipient == address(0)) revert InvalidAddress();
+
+        amount = pendingClaims[_msgSender()][token];
+        if (amount == 0) revert NoPendingClaim(_msgSender(), token);
+
+        pendingClaims[_msgSender()][token] = 0;
+        totalPendingClaims[token] -= amount;
+        IERC20(token).safeTransfer(recipient, amount);
+        emit PendingClaimPaid(_msgSender(), token, recipient, amount);
+    }
+
+    /// @dev External self-call boundary lets `redeemInKind` isolate a token
+    ///      transfer failure without rolling back delivery of every other asset.
+    function deliverInKindAsset(address token, address recipient, uint256 amount) external {
+        if (_msgSender() != address(this)) revert UnauthorizedSelfCall();
+        IERC20(token).safeTransfer(recipient, amount);
     }
 
     // ---------------------------------------------------------------------
@@ -303,6 +338,14 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
 
     function pricePerShareWad() external view returns (uint256) {
         return _pricePerShareWad(totalAssets(), totalSupply());
+    }
+
+    /// @notice Whether every current holding is within both fund and protocol
+    ///         exposure limits. A false result blocks new deposits, while the
+    ///         trader can still sell assets to restore compliance.
+    function exposuresCompliant() external view returns (bool) {
+        uint256 managedAssets = totalAssets();
+        return _exposuresWithinLimits(managedAssets);
     }
 
     function accruePerformanceFee() external nonReentrant returns (uint256 feeShares) {
@@ -494,7 +537,7 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         if (shares == 0 || receiver == address(0)) revert InvalidAmount();
         uint256 availableShares = maxRedeem(owner);
         if (shares > availableShares) {
-            revert InsufficientLiquidity(previewRedeem(shares), IERC20(asset()).balanceOf(address(this)));
+            revert InsufficientLiquidity(previewRedeem(shares), _availableBalance(asset()));
         }
 
         assets = previewRedeem(shares);
@@ -557,12 +600,12 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     }
 
     function _calculateTotalAssets(bool settlementPrice) private view returns (uint256 totalValue) {
-        totalValue = IERC20(asset()).balanceOf(address(this));
+        totalValue = _availableBalance(asset());
 
         uint256 length = _activeAssets.length;
         for (uint256 i; i < length; ++i) {
             address assetToken = _activeAssets[i];
-            uint256 balance = IERC20(assetToken).balanceOf(address(this));
+            uint256 balance = _availableBalance(assetToken);
             if (balance == 0) continue;
 
             IRafaAssetRegistry.AssetPolicy memory policy = _assetPolicy(assetToken);
@@ -621,8 +664,12 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         uint256 deadline,
         address adapter
     ) private returns (uint256 amountOut) {
-        uint256 inputBalanceBefore = IERC20(tokenIn).balanceOf(address(this));
-        uint256 outputBalanceBefore = IERC20(tokenOut).balanceOf(address(this));
+        // `_executeTrade` is private and its only caller, `trade`, is protected
+        // by `nonReentrant`; these before/after reads deliberately validate exact
+        // token movement instead of trusting the adapter's return value.
+        // slither-disable-start reentrancy-balance
+        uint256 inputBalanceBefore = _availableBalance(tokenIn);
+        uint256 outputBalanceBefore = _availableBalance(tokenOut);
         IERC20(tokenIn).forceApprove(adapter, amountIn);
 
         ITradeAdapter(adapter).swapExactInput(
@@ -630,12 +677,13 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         );
         IERC20(tokenIn).forceApprove(adapter, 0);
 
-        uint256 inputBalanceAfter = IERC20(tokenIn).balanceOf(address(this));
+        uint256 inputBalanceAfter = _availableBalance(tokenIn);
         uint256 actualInput = inputBalanceBefore - inputBalanceAfter;
         if (actualInput != amountIn) revert InvalidTradeInput(amountIn, actualInput);
 
-        amountOut = IERC20(tokenOut).balanceOf(address(this)) - outputBalanceBefore;
+        amountOut = _availableBalance(tokenOut) - outputBalanceBefore;
         if (amountOut < minAmountOut) revert InsufficientAssets(amountOut, minAmountOut);
+        // slither-disable-end reentrancy-balance
     }
 
     function _enforceExposure(address assetToken) private view {
@@ -646,12 +694,32 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         IRafaAssetRegistry.AssetPolicy memory policy = _assetPolicy(assetToken);
         uint256 effectiveMaximum = Math.min(uint256(config.maxExposureBps), uint256(policy.maxExposureBps));
         uint256 assetValue = _valueInAccountingAsset(
-            assetToken, IERC20(assetToken).balanceOf(address(this)), policy, policy.tradeMaxAge
+            assetToken, _availableBalance(assetToken), policy, policy.tradeMaxAge
         );
         uint256 exposureBps = Math.mulDiv(assetValue, BPS_DENOMINATOR, managedAssets, Math.Rounding.Ceil);
         if (exposureBps > effectiveMaximum) {
             revert AssetExposureAboveLimit(assetToken, exposureBps, effectiveMaximum);
         }
+    }
+
+    function _exposuresWithinLimits(uint256 managedAssets) private view returns (bool) {
+        if (managedAssets == 0) return true;
+
+        uint256 length = _activeAssets.length;
+        for (uint256 i; i < length; ++i) {
+            address assetToken = _activeAssets[i];
+            uint256 balance = _availableBalance(assetToken);
+            if (balance == 0) continue;
+
+            AssetConfig memory config = _assetConfigs[assetToken];
+            IRafaAssetRegistry.AssetPolicy memory policy = _assetPolicy(assetToken);
+            uint256 effectiveMaximum = Math.min(uint256(config.maxExposureBps), uint256(policy.maxExposureBps));
+            uint256 assetValue = _valueInAccountingAsset(assetToken, balance, policy, policy.valuationMaxAge);
+            uint256 exposureBps = Math.mulDiv(assetValue, BPS_DENOMINATOR, managedAssets, Math.Rounding.Ceil);
+            if (exposureBps > effectiveMaximum) return false;
+        }
+
+        return true;
     }
 
     function _amountFromAccountingAsset(
@@ -688,6 +756,22 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         if (maxExposureBps == 0 || maxExposureBps > BPS_DENOMINATOR) {
             revert InvalidRiskLimit(maxExposureBps);
         }
+    }
+
+    function _deliverOrReserve(address token, address claimant, uint256 amount) private {
+        try this.deliverInKindAsset{gas: IN_KIND_TRANSFER_GAS}(token, claimant, amount) {
+            emit InKindAssetDelivered(claimant, token, claimant, amount);
+        } catch {
+            pendingClaims[claimant][token] += amount;
+            totalPendingClaims[token] += amount;
+            emit PendingClaimCreated(claimant, token, amount);
+        }
+    }
+
+    function _availableBalance(address token) private view returns (uint256) {
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        uint256 reserved = totalPendingClaims[token];
+        return balance > reserved ? balance - reserved : 0;
     }
 
     function _checkGuardianOrAdmin() private view {

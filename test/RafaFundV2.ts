@@ -472,6 +472,316 @@ describe("RafaFundV2", function () {
       "AssetBalanceNotZero",
     );
   });
+
+  it("isolates a restricted RWA transfer as a claim without blocking the rest of an in-kind exit", async function () {
+    const { owner, investor, other, fund, usdc, adapter, registry } = await deploySystem({
+      performanceFeeBps: 0,
+    });
+    const restrictedRwa = await ethers.deployContract("MockRestrictedERC20");
+    const rwaOracle = await ethers.deployContract("MockPriceOracle", [WAD, await latestTimestamp()]);
+
+    await registry.configureAsset(
+      await restrictedRwa.getAddress(),
+      18,
+      await rwaOracle.getAddress(),
+      DAY,
+      DAY,
+      10_000,
+      await adapter.getAddress(),
+      ethers.encodeBytes32String("RWA"),
+      ethers.encodeBytes32String("RESTRICTED"),
+    );
+    await fund.connect(owner).addAsset(await restrictedRwa.getAddress(), 10_000);
+
+    const deposit = ethers.parseUnits("1000", 6);
+    const rwaBalance = ethers.parseUnits("100", 18);
+    await fund.connect(investor).deposit(deposit, investor.address);
+    await restrictedRwa.mint(await fund.getAddress(), rwaBalance);
+    await restrictedRwa.setBlocked(investor.address, true);
+
+    const shares = await fund.balanceOf(investor.address);
+    await expect(fund.connect(investor).redeemInKind(shares, investor.address, investor.address))
+      .to.emit(fund, "PendingClaimCreated")
+      .withArgs(investor.address, await restrictedRwa.getAddress(), rwaBalance);
+
+    expect(await usdc.balanceOf(await fund.getAddress())).to.equal(0n);
+    expect(await usdc.balanceOf(investor.address)).to.equal(ethers.parseUnits("1000000", 6));
+    expect(await fund.pendingClaims(investor.address, await restrictedRwa.getAddress())).to.equal(rwaBalance);
+    expect(await fund.totalPendingClaims(await restrictedRwa.getAddress())).to.equal(rwaBalance);
+    expect(await fund.totalAssets()).to.equal(0n);
+    expect(await fund.totalSupply()).to.equal(0n);
+
+    await expect(
+      fund.connect(other).claimPending(await restrictedRwa.getAddress(), other.address),
+    ).to.be.revertedWithCustomError(fund, "NoPendingClaim");
+    await expect(
+      fund.connect(investor).claimPending(await restrictedRwa.getAddress(), other.address),
+    )
+      .to.emit(fund, "PendingClaimPaid")
+      .withArgs(investor.address, await restrictedRwa.getAddress(), other.address, rwaBalance);
+    expect(await restrictedRwa.balanceOf(other.address)).to.equal(rwaBalance);
+    expect(await fund.totalPendingClaims(await restrictedRwa.getAddress())).to.equal(0n);
+
+    await expect(
+      fund.connect(investor).deliverInKindAsset(await usdc.getAddress(), investor.address, 1n),
+    ).to.be.revertedWithCustomError(fund, "UnauthorizedSelfCall");
+  });
+
+  it("prevents a compromised adapter from over-pulling input or faking trade output", async function () {
+    const { trader, investor, fund, usdc, weth, registry, wethOracle } = await deploySystem({
+      performanceFeeBps: 0,
+    });
+    const adversarialAdapter = await ethers.deployContract("AdversarialTradeAdapter", [await usdc.getAddress()]);
+    await registry.configureAsset(
+      await weth.getAddress(),
+      18,
+      await wethOracle.getAddress(),
+      DAY,
+      DAY,
+      7_000,
+      await adversarialAdapter.getAddress(),
+      ethers.encodeBytes32String("CRYPTO"),
+      ethers.encodeBytes32String("WETH"),
+    );
+
+    const deposit = ethers.parseUnits("10000", 6);
+    const amountIn = ethers.parseUnits("1000", 6);
+    const minimumOut = ethers.parseUnits("0.49", 18);
+    const fundAddress = await fund.getAddress();
+    await fund.connect(investor).deposit(deposit, investor.address);
+
+    await expect(
+      fund
+        .connect(trader)
+        .trade(await usdc.getAddress(), await weth.getAddress(), amountIn, minimumOut, (await latestTimestamp()) + 600),
+    ).to.be.revertedWithCustomError(usdc, "ERC20InsufficientAllowance");
+    expect(await usdc.balanceOf(fundAddress)).to.equal(deposit);
+    expect(await usdc.balanceOf(await adversarialAdapter.getAddress())).to.equal(0n);
+
+    await adversarialAdapter.setAttack(1);
+    await expect(
+      fund
+        .connect(trader)
+        .trade(await usdc.getAddress(), await weth.getAddress(), amountIn, minimumOut, (await latestTimestamp()) + 600),
+    ).to.be.revertedWithCustomError(fund, "InsufficientAssets");
+    expect(await usdc.balanceOf(fundAddress)).to.equal(deposit);
+    expect(await usdc.balanceOf(await adversarialAdapter.getAddress())).to.equal(0n);
+
+    await weth.mint(await adversarialAdapter.getAddress(), minimumOut);
+    await adversarialAdapter.setAttack(2);
+    await expect(
+      fund
+        .connect(trader)
+        .trade(await usdc.getAddress(), await weth.getAddress(), amountIn, minimumOut, (await latestTimestamp()) + 600),
+    ).to.emit(fund, "TradeExecuted");
+    expect(await usdc.balanceOf(fundAddress)).to.equal(deposit - amountIn);
+    expect(await weth.balanceOf(fundAddress)).to.equal(minimumOut);
+  });
+
+  it("resists first-depositor donation attacks with virtual shares", async function () {
+    const { investor, other: attacker, fund, usdc } = await deploySystem({
+      performanceFeeBps: 0,
+      depositCap: ethers.parseUnits("2000000", 6),
+    });
+    const attackerDeposit = 1n;
+    const donation = ethers.parseUnits("1000000", 6);
+    const victimDeposit = ethers.parseUnits("10000", 6);
+
+    await usdc.mint(attacker.address, donation + attackerDeposit);
+    await usdc.connect(attacker).approve(await fund.getAddress(), ethers.MaxUint256);
+    await fund.connect(attacker).deposit(attackerDeposit, attacker.address);
+    await usdc.connect(attacker).transfer(await fund.getAddress(), donation);
+
+    await fund.connect(investor).deposit(victimDeposit, investor.address);
+    const victimShares = await fund.balanceOf(investor.address);
+    expect(victimShares).to.be.greaterThan(0n);
+    expect(await fund.previewRedeem(victimShares)).to.be.greaterThanOrEqual(victimDeposit - 1n);
+
+    const attackerShares = await fund.balanceOf(attacker.address);
+    const attackerBalanceBeforeExit = await usdc.balanceOf(attacker.address);
+    await fund.connect(attacker).redeemInKind(attackerShares, attacker.address, attacker.address);
+    const attackerRecovered = (await usdc.balanceOf(attacker.address)) - attackerBalanceBeforeExit;
+    expect(attackerRecovered).to.be.lessThan(donation + attackerDeposit);
+
+    await fund.connect(investor).redeemInKind(victimShares, investor.address, investor.address);
+    expect(await fund.totalSupply()).to.equal(0n);
+    expect(await usdc.balanceOf(await fund.getAddress())).to.equal(0n);
+  });
+
+  it("blocks new deposits after a direct token donation breaches exposure limits", async function () {
+    const { owner, trader, investor, fund, usdc, weth } = await deploySystem({ performanceFeeBps: 0 });
+    await fund.connect(owner).updateAssetExposure(await weth.getAddress(), 3_000);
+    await fund.connect(investor).deposit(ethers.parseUnits("1000", 6), investor.address);
+
+    await weth.mint(await fund.getAddress(), ethers.parseUnits("1", 18));
+    expect(await fund.exposuresCompliant()).to.equal(false);
+    expect(await fund.maxDeposit(investor.address)).to.equal(0n);
+    await expect(fund.connect(investor).deposit(1n, investor.address))
+      .to.be.revertedWithCustomError(fund, "DepositCapExceeded")
+      .withArgs(1n, 0n);
+
+    await fund.connect(trader).trade(
+      await weth.getAddress(),
+      await usdc.getAddress(),
+      ethers.parseUnits("0.7", 18),
+      ethers.parseUnits("1330", 6),
+      (await latestTimestamp()) + 600,
+    );
+    expect(await fund.exposuresCompliant()).to.equal(true);
+    expect(await fund.maxDeposit(investor.address)).to.be.greaterThan(0n);
+  });
+
+  it("preserves accounting invariants through a deterministic multi-user operation sequence", async function () {
+    const { investor, other, feeRecipient, fund, usdc } = await deploySystem({ performanceFeeBps: 0 });
+    await usdc.mint(other.address, ethers.parseUnits("200000", 6));
+    await usdc.connect(other).approve(await fund.getAddress(), ethers.MaxUint256);
+
+    const actors = [investor, other];
+    let state = 0x5eedn;
+    for (let i = 0; i < 64; i += 1) {
+      state = (state * 1_103_515_245n + 12_345n) % (2n ** 31n);
+      const actor = actors[Number(state % 2n)];
+      const shouldDeposit = state % 3n !== 0n;
+
+      if (shouldDeposit) {
+        const amount = ((state % 1_000n) + 1n) * 10n ** 6n;
+        await fund.connect(actor).deposit(amount, actor.address);
+      } else {
+        const shares = await fund.balanceOf(actor.address);
+        if (shares > 0n) {
+          const sharesToRedeem = shares / ((state % 4n) + 2n);
+          if (sharesToRedeem > 0n) {
+            await fund.connect(actor).redeem(sharesToRedeem, actor.address, actor.address);
+          }
+        }
+      }
+
+      const supply = await fund.totalSupply();
+      const summedBalances =
+        (await fund.balanceOf(investor.address)) +
+        (await fund.balanceOf(other.address)) +
+        (await fund.balanceOf(feeRecipient.address));
+      const managedAssets = await fund.totalAssets();
+      expect(summedBalances).to.equal(supply);
+      expect(managedAssets).to.equal(await usdc.balanceOf(await fund.getAddress()));
+      expect(await fund.convertToAssets(supply)).to.be.lessThanOrEqual(managedAssets);
+    }
+  });
+
+  it("does not silently re-enable an asset when the protocol updates its policy", async function () {
+    const { weth, adapter, registry, wethOracle } = await deploySystem();
+    await registry.setAssetStatus(await weth.getAddress(), false, false, true);
+    await registry.configureAsset(
+      await weth.getAddress(),
+      18,
+      await wethOracle.getAddress(),
+      DAY,
+      DAY,
+      6_000,
+      await adapter.getAddress(),
+      ethers.encodeBytes32String("CRYPTO"),
+      ethers.encodeBytes32String("WETH"),
+    );
+
+    const policy = await registry.getAssetPolicy(await weth.getAddress());
+    expect(policy.admissionEnabled).to.equal(false);
+    expect(policy.buyEnabled).to.equal(false);
+    expect(policy.sellEnabled).to.equal(true);
+    expect(policy.maxExposureBps).to.equal(6_000n);
+  });
+
+  it("validates safety-critical constructor bounds", async function () {
+    const { owner, trader, guardian, feeRecipient, usdc, registry } = await deploySystem();
+    const baseParams = {
+      name: "Bounds",
+      symbol: "BND",
+      metadataURI: "ipfs://bounds",
+      accountingAsset: await usdc.getAddress(),
+      assetRegistry: await registry.getAddress(),
+      admin: owner.address,
+      trader: trader.address,
+      guardian: guardian.address,
+      feeRecipient: feeRecipient.address,
+      performanceFeeBps: 0,
+      maxTradeSlippageBps: 500,
+      maxTradeValueBps: 5_000,
+      adminTransferDelay: 0,
+      depositCap: ethers.parseUnits("1000", 6),
+    };
+
+    await expect(
+      ethers.deployContract("RafaFundV2", [{ ...baseParams, performanceFeeBps: 3_001 }]),
+    ).to.be.revertedWithCustomError(await ethers.getContractFactory("RafaFundV2"), "InvalidFee");
+    await expect(
+      ethers.deployContract("RafaFundV2", [{ ...baseParams, maxTradeSlippageBps: 2_001 }]),
+    ).to.be.revertedWithCustomError(await ethers.getContractFactory("RafaFundV2"), "InvalidSlippage");
+    await expect(
+      ethers.deployContract("RafaFundV2", [{ ...baseParams, maxTradeValueBps: 0 }]),
+    ).to.be.revertedWithCustomError(await ethers.getContractFactory("RafaFundV2"), "InvalidRiskLimit");
+    await expect(
+      ethers.deployContract("RafaFundV2", [{ ...baseParams, depositCap: 0 }]),
+    ).to.be.revertedWithCustomError(await ethers.getContractFactory("RafaFundV2"), "InvalidAmount");
+
+    const highDecimalsAsset = await ethers.deployContract("MockERC20", ["High Decimals", "HIGH", 19]);
+    const highDecimalsRegistry = await ethers.deployContract("RafaAssetRegistry", [
+      owner.address,
+      await highDecimalsAsset.getAddress(),
+    ]);
+    await expect(
+      ethers.deployContract("RafaFundV2", [
+        {
+          ...baseParams,
+          accountingAsset: await highDecimalsAsset.getAddress(),
+          assetRegistry: await highDecimalsRegistry.getAddress(),
+        },
+      ]),
+    ).to.be.revertedWithCustomError(await ethers.getContractFactory("RafaFundV2"), "UnsupportedDecimals");
+  });
+
+  it("enforces delegated exits and administrator update boundaries", async function () {
+    const { owner, investor, other, fund, usdc, weth } = await deploySystem({ performanceFeeBps: 0 });
+    const mintedShares = ethers.parseUnits("1000", 18);
+    await fund.connect(investor).mint(mintedShares, investor.address);
+    expect(await fund.maxRedeem(other.address)).to.equal(0n);
+    expect(await fund.pricePerShareWad()).to.equal(WAD);
+
+    const delegatedAssets = ethers.parseUnits("100", 6);
+    const delegatedShares = await fund.previewWithdraw(delegatedAssets);
+    await fund.connect(investor).approve(other.address, delegatedShares);
+    await fund.connect(other).withdraw(delegatedAssets, other.address, investor.address);
+    expect(await usdc.balanceOf(other.address)).to.equal(delegatedAssets);
+    expect(await fund.allowance(investor.address, other.address)).to.equal(0n);
+
+    await expect(fund.connect(other).setDepositCap(1n)).to.be.revertedWithCustomError(
+      fund,
+      "AccessControlUnauthorizedAccount",
+    );
+    await expect(fund.connect(owner).setDepositCap(0n)).to.be.revertedWithCustomError(fund, "InvalidAmount");
+    await fund.connect(owner).setDepositCap(ethers.parseUnits("2000000", 6));
+    await expect(fund.connect(owner).setMaxTradeValueBps(0)).to.be.revertedWithCustomError(
+      fund,
+      "InvalidRiskLimit",
+    );
+    await fund.connect(owner).setMaxTradeValueBps(2_500);
+    await expect(fund.connect(owner).setFeeRecipient(ethers.ZeroAddress)).to.be.revertedWithCustomError(
+      fund,
+      "InvalidAddress",
+    );
+    await fund.connect(owner).setFeeRecipient(other.address);
+    await fund.connect(owner).setMetadataURI("ipfs://updated");
+    expect(await fund.metadataURI()).to.equal("ipfs://updated");
+
+    await fund.connect(owner).removeAsset(await weth.getAddress());
+    expect(await fund.getActiveAssets()).to.deep.equal([]);
+    await expect(fund.connect(owner).removeAsset(await weth.getAddress())).to.be.revertedWithCustomError(
+      fund,
+      "AssetNotSupported",
+    );
+    await expect(fund.connect(investor).redeemInKind(0n, investor.address, investor.address)).to.be.revertedWithCustomError(
+      fund,
+      "InvalidAmount",
+    );
+  });
 });
 
 describe("FundFactoryV2", function () {
@@ -506,6 +816,93 @@ describe("FundFactoryV2", function () {
       factory,
       "FundAlreadyRegistered",
     );
+  });
+
+  it("creates, registers, funds and allocates a four-fund catalog", async function () {
+    const { owner, trader, guardian, feeRecipient, investor, fund: balancedFund, usdc, weth, registry } =
+      await deploySystem({ performanceFeeBps: 0 });
+    const commonParams = {
+      metadataURI: "https://rafa.ai/docs",
+      accountingAsset: await usdc.getAddress(),
+      assetRegistry: await registry.getAddress(),
+      admin: owner.address,
+      trader: trader.address,
+      guardian: guardian.address,
+      feeRecipient: feeRecipient.address,
+      performanceFeeBps: 0,
+      maxTradeSlippageBps: 500,
+      maxTradeValueBps: 5_000,
+      adminTransferDelay: 0,
+      depositCap: ethers.parseUnits("1000000", 6),
+    };
+    const cashFund = await ethers.deployContract("RafaFundV2", [
+      { ...commonParams, name: "RAFA Cash", symbol: "rCASH" },
+    ]);
+    const conservativeFund = await ethers.deployContract("RafaFundV2", [
+      { ...commonParams, name: "RAFA Conservative", symbol: "rSAFE" },
+    ]);
+    const growthFund = await ethers.deployContract("RafaFundV2", [
+      { ...commonParams, name: "RAFA Growth", symbol: "rGROW" },
+    ]);
+    await conservativeFund.addAsset(await weth.getAddress(), 3_000);
+    await growthFund.addAsset(await weth.getAddress(), 7_000);
+
+    const factory = await ethers.deployContract("FundFactoryV2", [
+      owner.address,
+      await usdc.getAddress(),
+      await registry.getAddress(),
+      2_000,
+    ]);
+    const funds = [cashFund, conservativeFund, balancedFund, growthFund];
+    for (const catalogFund of funds) {
+      await factory.registerFund(await catalogFund.getAddress());
+      await usdc.connect(investor).approve(await catalogFund.getAddress(), ethers.MaxUint256);
+      await catalogFund.connect(investor).deposit(ethers.parseUnits("1000", 6), investor.address);
+    }
+
+    const deadline = (await latestTimestamp()) + 600;
+    await conservativeFund.connect(trader).trade(
+      await usdc.getAddress(),
+      await weth.getAddress(),
+      ethers.parseUnits("100", 6),
+      ethers.parseUnits("0.048", 18),
+      deadline,
+    );
+    await balancedFund.connect(trader).trade(
+      await usdc.getAddress(),
+      await weth.getAddress(),
+      ethers.parseUnits("200", 6),
+      ethers.parseUnits("0.095", 18),
+      deadline,
+    );
+    await growthFund.connect(trader).trade(
+      await usdc.getAddress(),
+      await weth.getAddress(),
+      ethers.parseUnits("500", 6),
+      ethers.parseUnits("0.24", 18),
+      deadline,
+    );
+    await growthFund.connect(trader).trade(
+      await usdc.getAddress(),
+      await weth.getAddress(),
+      ethers.parseUnits("100", 6),
+      ethers.parseUnits("0.048", 18),
+      deadline,
+    );
+
+    expect(await factory.fundsLength()).to.equal(4n);
+    expect(await factory.getFunds(1, 2)).to.deep.equal([
+      await conservativeFund.getAddress(),
+      await balancedFund.getAddress(),
+    ]);
+    expect(await cashFund.totalAssets()).to.equal(ethers.parseUnits("1000", 6));
+    expect(await conservativeFund.totalAssets()).to.equal(ethers.parseUnits("1000", 6));
+    expect(await balancedFund.totalAssets()).to.equal(ethers.parseUnits("1000", 6));
+    expect(await growthFund.totalAssets()).to.equal(ethers.parseUnits("1000", 6));
+    expect(await weth.balanceOf(await cashFund.getAddress())).to.equal(0n);
+    expect(await weth.balanceOf(await conservativeFund.getAddress())).to.equal(ethers.parseUnits("0.05", 18));
+    expect(await weth.balanceOf(await balancedFund.getAddress())).to.equal(ethers.parseUnits("0.1", 18));
+    expect(await weth.balanceOf(await growthFund.getAddress())).to.equal(ethers.parseUnits("0.3", 18));
   });
 
   it("rejects funds with a different accounting asset, registry or excessive performance fee", async function () {
@@ -653,5 +1050,34 @@ describe("ChainlinkPriceOracle", function () {
     await sequencerFeed.setRoundData(4, 0, timestamp - 1000, timestamp, 4);
     await assetFeed.setRoundData(11, 2000n * 10n ** 8n, timestamp, timestamp + 100, 11);
     await expect(oracle.latestPrice()).to.be.revertedWithCustomError(oracle, "InvalidOracleTimestamp");
+  });
+
+  it("rejects invalid answers, incomplete rounds and unsupported feed precision", async function () {
+    const assetFeed = await ethers.deployContract("MockAggregatorV3", [8]);
+    const accountingFeed = await ethers.deployContract("MockAggregatorV3", [8]);
+    const timestamp = await latestTimestamp();
+    const oracle = await ethers.deployContract("ChainlinkPriceOracle", [
+      await assetFeed.getAddress(),
+      await accountingFeed.getAddress(),
+      ethers.ZeroAddress,
+      0,
+    ]);
+
+    await accountingFeed.setRoundData(1, 10n ** 8n, timestamp, timestamp, 1);
+    await assetFeed.setRoundData(1, 0, timestamp, timestamp, 1);
+    await expect(oracle.latestPrice()).to.be.revertedWithCustomError(oracle, "InvalidOracleAnswer");
+
+    await assetFeed.setRoundData(2, 2_000n * 10n ** 8n, timestamp, timestamp, 1);
+    await expect(oracle.latestPrice()).to.be.revertedWithCustomError(oracle, "IncompleteOracleRound");
+
+    const highPrecisionFeed = await ethers.deployContract("MockAggregatorV3", [19]);
+    await expect(
+      ethers.deployContract("ChainlinkPriceOracle", [
+        await highPrecisionFeed.getAddress(),
+        await accountingFeed.getAddress(),
+        ethers.ZeroAddress,
+        0,
+      ]),
+    ).to.be.revertedWithCustomError(await ethers.getContractFactory("ChainlinkPriceOracle"), "UnsupportedFeedDecimals");
   });
 });
