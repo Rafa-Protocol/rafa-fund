@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "lastReviewed": "2026-09-24",
+  "sources": [
+    {
+      "provider": "Coinbase B20",
+      "networks": ["Base"],
+      "assetTypes": ["tokenized equities"],
+      "source": "https://docs.base.org/build-on-base/integrate-defi/list-tokenized-stocks",
+      "inventory": "assets/base-mainnet-b20.json"
+    },
+    {
+      "provider": "xStocks by Backed",
+      "networks": ["Ethereum"],
+      "assetTypes": ["tokenized equities", "tokenized ETFs"],
+      "source": "https://docs.xstocks.fi/apis/openapi",
+      "api": "https://api.xstocks.fi/api/v2/public/assets",
+      "inventory": "Run scripts/discover-xstocks.mjs; 1,124 Ethereum deployments were observed on 2026-09-24."
+    },
+    {
+      "provider": "Ondo Global Markets",
+      "networks": ["Ethereum"],
+      "assetTypes": ["tokenized equities", "tokenized ETFs"],
+      "source": "https://ondo.finance/",
+      "inventory": "Issuer reports 450+ tokenized U.S. stocks and ETFs; retrieve official contract metadata before review."
+    },
+    {
+      "provider": "Franklin Templeton Benji",
+      "networks": ["Base", "Ethereum"],
+      "assetTypes": ["tokenized treasury fund"],
+      "source": "https://digitalassets.franklintempleton.com/benji/benji-contracts/",
+      "knownContracts": {
+        "Base": "0x60CfC2b186a4CF647486e42c42B11cC6D571d1E4",
+        "Ethereum": "0x3DDc84940Ab509C11B20B76B466933f40b750dc9"
+      }
+    },
+    {
+      "provider": "Superstate",
+      "networks": ["Base", "Ethereum"],
+      "assetTypes": ["tokenized treasury funds", "tokenized equity"],
+      "source": "https://superstate.com/",
+      "inventory": "Review USTB, USCC, CUSHY, VBDC, and SBET from official deployment data before admission."
+    }
+  ]
+}
+

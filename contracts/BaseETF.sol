@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
+// LEGACY PROTOTYPE: retained for history. Use RafaFundV2 for new deployments.
+
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./interfaces/IAerodromeRouter.sol";
 
@@ -17,9 +19,9 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
     // --- State Variables ---
     IERC20 public immutable USDC;
     IAerodromeRouter public immutable ROUTER;
-    
+
     // Limits to prevent gas DoS loop
-    uint256 public constant MAX_ASSETS = 10; 
+    uint256 public constant MAX_ASSETS = 10;
 
     struct AssetConfig {
         bool isSupported;
@@ -29,7 +31,7 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
 
     address[] public activeAssets;
     mapping(address => AssetConfig) public assetConfig;
-    
+
     bool public oracleMode = false;
 
     // --- Events ---
@@ -38,12 +40,7 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
     event RedeemedInKind(address indexed user, uint256 sharesBurned);
     event TradeExecuted(address tokenIn, address tokenOut, uint256 amountIn, uint256 amountOut);
 
-    constructor(
-        string memory _name, 
-        string memory _symbol, 
-        address _usdc, 
-        address _router
-    ) ERC20(_name, _symbol) {
+    constructor(string memory _name, string memory _symbol, address _usdc, address _router) ERC20(_name, _symbol) {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(MANAGER_ROLE, msg.sender);
         USDC = IERC20(_usdc);
@@ -61,10 +58,10 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
     function calculateTotalFundValue() public view returns (uint256) {
         uint256 totalValue = USDC.balanceOf(address(this)); // Start with idle USDC
 
-        for (uint i = 0; i < activeAssets.length; i++) {
+        for (uint256 i = 0; i < activeAssets.length; i++) {
             address token = activeAssets[i];
             uint256 bal = IERC20(token).balanceOf(address(this));
-            
+
             if (bal > 0) {
                 totalValue += _getTokenValueInUSDC(token, bal);
             }
@@ -74,14 +71,14 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
 
     function _getTokenValueInUSDC(address token, uint256 amount) internal view returns (uint256) {
         if (amount == 0) return 0;
-        
+
         // ORACLE MODE
         if (oracleMode) {
             uint256 price = assetConfig[token].manualPrice; // Assumed 18 decimals price
             // Normalize: (Amount * Price) / 1e18
-            return (amount * price) / 1e18; 
-        } 
-        
+            return (amount * price) / 1e18;
+        }
+
         // DEX MODE (Aerodrome)
         IAerodromeRouter.Route[] memory route = new IAerodromeRouter.Route[](1);
         route[0] = IAerodromeRouter.Route({
@@ -107,7 +104,7 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
      */
     function mint(uint256 _usdcAmount) external nonReentrant {
         require(_usdcAmount > 0, "Zero amount");
-        
+
         // 1. Calculate NAV before deposit
         uint256 currentTotalValue = calculateTotalFundValue();
         uint256 currentSupply = totalSupply();
@@ -119,7 +116,7 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
         uint256 sharesToMint;
         if (currentSupply == 0) {
             // Initial mint: 1 USDC (6 dec) = 1 Share (18 dec)
-            sharesToMint = _usdcAmount * 1e12; 
+            sharesToMint = _usdcAmount * 1e12;
         } else {
             // Formula: (Deposit / ExistingEquity) * ExistingShares
             sharesToMint = (_usdcAmount * currentSupply) / currentTotalValue;
@@ -134,7 +131,7 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
      */
     function burn(uint256 _shares) external nonReentrant {
         require(balanceOf(msg.sender) >= _shares, "Insufficient balance");
-        
+
         uint256 currentSupply = totalSupply();
         uint256 shareRatio = (_shares * 1e18) / currentSupply;
 
@@ -143,10 +140,10 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
         uint256 totalUsdcGenerated = 0;
 
         // 1. Sell proportionate share of every asset
-        for (uint i = 0; i < activeAssets.length; i++) {
+        for (uint256 i = 0; i < activeAssets.length; i++) {
             address token = activeAssets[i];
             uint256 bal = IERC20(token).balanceOf(address(this));
-            
+
             if (bal > 0) {
                 uint256 amountToSell = (bal * shareRatio) / 1e18;
                 if (amountToSell > 0) {
@@ -158,8 +155,8 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
         // 2. Send generated USDC + proportionate share of idle USDC
         uint256 idleUSDC = USDC.balanceOf(address(this)) - totalUsdcGenerated; // rough calc of original idle
         uint256 idleShare = (idleUSDC * shareRatio) / 1e18;
-        
-        USDC.safeTransfer(msg.sender, totalUsdcGenerated + idleShare); 
+
+        USDC.safeTransfer(msg.sender, totalUsdcGenerated + idleShare);
         emit Redeemed(msg.sender, _shares, totalUsdcGenerated + idleShare);
     }
 
@@ -169,11 +166,11 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
     function burnInKind(uint256 _shares) external nonReentrant {
         uint256 currentSupply = totalSupply();
         uint256 shareRatio = (_shares * 1e18) / currentSupply;
-        
+
         _burn(msg.sender, _shares);
 
         // Transfer Asset Shares
-        for (uint i = 0; i < activeAssets.length; i++) {
+        for (uint256 i = 0; i < activeAssets.length; i++) {
             address token = activeAssets[i];
             uint256 bal = IERC20(token).balanceOf(address(this));
             if (bal > 0) {
@@ -181,7 +178,7 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
                 IERC20(token).safeTransfer(msg.sender, amountToSend);
             }
         }
-        
+
         // Transfer USDC Share
         uint256 usdcBal = USDC.balanceOf(address(this));
         uint256 usdcToSend = (usdcBal * shareRatio) / 1e18;
@@ -194,12 +191,10 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
     // MANAGER FUNCTIONS (TRADING)
     // =============================================================
 
-    function trade(
-        address tokenIn, 
-        address tokenOut, 
-        uint256 amountIn, 
-        uint256 minAmountOut
-    ) external onlyRole(MANAGER_ROLE) {
+    function trade(address tokenIn, address tokenOut, uint256 amountIn, uint256 minAmountOut)
+        external
+        onlyRole(MANAGER_ROLE)
+    {
         IERC20(tokenIn).approve(address(ROUTER), amountIn);
 
         bool isStable = false;
@@ -209,21 +204,11 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
         }
 
         IAerodromeRouter.Route[] memory route = new IAerodromeRouter.Route[](1);
-        route[0] = IAerodromeRouter.Route({
-            from: tokenIn,
-            to: tokenOut,
-            stable: isStable,
-            factory: ROUTER.defaultFactory()
-        });
+        route[0] =
+            IAerodromeRouter.Route({from: tokenIn, to: tokenOut, stable: isStable, factory: ROUTER.defaultFactory()});
 
-        ROUTER.swapExactTokensForTokens(
-            amountIn,
-            minAmountOut,
-            route,
-            address(this),
-            block.timestamp
-        );
-        
+        ROUTER.swapExactTokensForTokens(amountIn, minAmountOut, route, address(this), block.timestamp);
+
         emit TradeExecuted(tokenIn, tokenOut, amountIn, minAmountOut);
     }
 
@@ -235,17 +220,13 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
         require(!assetConfig[_token].isSupported, "Already whitelisted");
         require(activeAssets.length < MAX_ASSETS, "Max assets reached");
 
-        assetConfig[_token] = AssetConfig({
-            isSupported: true,
-            isStablePair: _isStablePair,
-            manualPrice: 0
-        });
+        assetConfig[_token] = AssetConfig({isSupported: true, isStablePair: _isStablePair, manualPrice: 0});
         activeAssets.push(_token);
     }
 
     function _sellTokenForUSDC(address token, uint256 amount) internal returns (uint256) {
         IERC20(token).approve(address(ROUTER), amount);
-        
+
         IAerodromeRouter.Route[] memory route = new IAerodromeRouter.Route[](1);
         route[0] = IAerodromeRouter.Route({
             from: token,
@@ -254,13 +235,7 @@ contract BaseETF is ERC20, AccessControl, ReentrancyGuard {
             factory: ROUTER.defaultFactory()
         });
 
-        uint256[] memory amounts = ROUTER.swapExactTokensForTokens(
-            amount,
-            0, 
-            route,
-            address(this),
-            block.timestamp
-        );
+        uint256[] memory amounts = ROUTER.swapExactTokensForTokens(amount, 0, route, address(this), block.timestamp);
         return amounts[amounts.length - 1];
     }
 }

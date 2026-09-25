@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
+// LEGACY PROTOTYPE: retained for history. Use FundFactoryV2 for the official registry.
+
 import "./BaseETF.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
@@ -9,11 +11,11 @@ contract FundFactory is Ownable {
 
     address public immutable USDC;
     address public immutable AERODROME_ROUTER;
-    
+
     address[] public allFunds;
     mapping(address => bool) public isFund;
 
-    constructor(address _usdc, address _router) Ownable() {
+    constructor(address _usdc, address _router) Ownable(msg.sender) {
         USDC = _usdc;
         AERODROME_ROUTER = _router;
     }
@@ -24,7 +26,7 @@ contract FundFactory is Ownable {
         // Grant Manager Role to the specified user
         newFund.grantRole(newFund.DEFAULT_ADMIN_ROLE(), msg.sender);
         newFund.grantRole(newFund.MANAGER_ROLE(), _manager);
-        
+
         // Optional: Revoke Factory's rights if desired, keeping only for now for easy management
         // newFund.renounceRole(newFund.MANAGER_ROLE(), address(this));
 

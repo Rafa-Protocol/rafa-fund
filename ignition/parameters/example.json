@@ -1,0 +1,44 @@
+{
+  "FundFactoryV2Module": {
+    "factoryOwner": "0x0000000000000000000000000000000000000001",
+    "accountingAsset": "0x0000000000000000000000000000000000000002",
+    "assetRegistry": "0x0000000000000000000000000000000000000003",
+    "maximumPerformanceFeeBps": 2000
+  },
+  "RafaAssetRegistryModule": {
+    "registryOwner": "0x0000000000000000000000000000000000000001",
+    "accountingAsset": "0x0000000000000000000000000000000000000002"
+  },
+  "AerodromeAdapterModule": {
+    "adapterOwner": "0x0000000000000000000000000000000000000001",
+    "accountingAsset": "0x0000000000000000000000000000000000000002",
+    "aerodromeRouter": "0x0000000000000000000000000000000000000004"
+  },
+  "UniswapV3AdapterModule": {
+    "adapterOwner": "0x0000000000000000000000000000000000000001",
+    "accountingAsset": "0x0000000000000000000000000000000000000002",
+    "uniswapV3Router": "0x0000000000000000000000000000000000000005"
+  },
+  "RafaFundV2Module": {
+    "fundName": "RAFA Genesis Fund",
+    "fundSymbol": "rGEN",
+    "metadataURI": "ipfs://replace-before-deployment",
+    "accountingAsset": "0x0000000000000000000000000000000000000002",
+    "assetRegistry": "0x0000000000000000000000000000000000000003",
+    "admin": "0x0000000000000000000000000000000000000001",
+    "trader": "0x0000000000000000000000000000000000000006",
+    "guardian": "0x0000000000000000000000000000000000000007",
+    "feeRecipient": "0x0000000000000000000000000000000000000008",
+    "performanceFeeBps": 2000,
+    "maxTradeSlippageBps": 300,
+    "maxTradeValueBps": 2500,
+    "adminTransferDelay": 86400,
+    "depositCap": 1000000000000
+  },
+  "ChainlinkPriceOracleModule": {
+    "assetUsdFeed": "0x0000000000000000000000000000000000000009",
+    "accountingAssetUsdFeed": "0x0000000000000000000000000000000000000010",
+    "sequencerUptimeFeed": "0x0000000000000000000000000000000000000011",
+    "sequencerGracePeriod": 3600
+  }
+}

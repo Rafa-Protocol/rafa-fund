@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.24;
 
 interface IAerodromeRouter {
     struct Route {
@@ -26,10 +26,7 @@ interface IAerodromeRouter {
     // @notice Calculates the expected output amount for a given input
     // @param amountIn The amount of input tokens
     // @param routes The trading path
-    function getAmountsOut(
-        uint256 amountIn, 
-        Route[] memory routes
-    ) external view returns (uint256[] memory amounts);
+    function getAmountsOut(uint256 amountIn, Route[] memory routes) external view returns (uint256[] memory amounts);
 
     // @notice Returns the address of the default factory used for route creation
     function defaultFactory() external view returns (address);
