@@ -1,0 +1,128 @@
+{
+  "schemaVersion": 1,
+  "network": "Base Sepolia",
+  "chainId": 84532,
+  "explorerUrl": "https://sepolia.basescan.org",
+  "deploymentBlock": 47263259,
+  "deployedAt": "2026-09-25T00:06:46.000Z",
+  "gitCommit": "00cff8ab933a07025c0e37c6c2d7319db5dca994",
+  "deployer": "0xD7a95F01157c6f0D74b6970A9BBe7E941284ED65",
+  "administration": {
+    "owner": "0xD7a95F01157c6f0D74b6970A9BBe7E941284ED65",
+    "trader": "0xD7a95F01157c6f0D74b6970A9BBe7E941284ED65",
+    "guardian": "0xD7a95F01157c6f0D74b6970A9BBe7E941284ED65",
+    "feeRecipient": "0xD7a95F01157c6f0D74b6970A9BBe7E941284ED65",
+    "safe": null,
+    "adminTransferDelay": 0,
+    "warning": "Single testnet EOA only. Production requires separate multisig roles and a non-zero transfer delay."
+  },
+  "contracts": {
+    "testUsdc": "0x6677777160Cacd264105fF9309b02755E27710B5",
+    "testWeth": "0x29c74C5b5288C2e1D70064AFcB433Af49E82568d",
+    "mockRouter": "0x2a6efDd7E68B056fFf771d576282EbD31d5CDfd7",
+    "aerodromeAdapter": "0x9e993d65c1963c8dF7f594F43CBcDc401E93D0A6",
+    "assetRegistry": "0xe988d5D15093D1a0a3d05d8c8A831dc5b959ae5F",
+    "testWethOracle": "0x305F8bD5e3eF79E97e831F926f2FE377209cc7cC",
+    "cashFund": "0xb9141599802E21C563DAA0886B5AF6d21BBCb3Da",
+    "conservativeFund": "0x5bF8618c358900D07b8334d974dc48121A19E098",
+    "balancedFund": "0x3e8A15B115DF2D2C86D102BB3dd487b27dA6e7a1",
+    "growthFund": "0x1aAC9A351819DC49C00378a0c40f5f9d3376e7CD",
+    "fundFactory": "0xE840b49BCf3791d94eD3253d2E67Fa6d5B0D6a15"
+  },
+  "deploymentTransactions": {
+    "testUsdc": "0xc95c00459cd991ff889344e9a54ee1527d011777ab43d1c47facd32ba61bb156",
+    "testWeth": "0xbe6c44aca94be2eb2544614d37c2ab4d7b31ff09af3ab358d40954358a443500",
+    "mockRouter": "0x4651ca569285a9d7d63f6293a45199a7a1aeadd4705e7978eb2ab3bc27eccbfe",
+    "aerodromeAdapter": "0x4a098facff999c4b4c437425bef098aaa41778e4b85376153fb4ea1718bf5ee9",
+    "assetRegistry": "0x6b95347b8c65cea37f1fee3641f39596ca081bde0762662c8988069f7c0580fc",
+    "testWethOracle": "0xba8d035d2bfee8dfc444b8ca45e24785dd7f500c585455bbfb93a54a395f7792",
+    "cashFund": "0x9f2a8cb43a23ed263d77fffb7dfec0e895733c1f32ae33fa7ba96c006331a783",
+    "balancedFund": "0x5e93330558df259e20abe49111e46d3156cdf3123dbe019389fd5de497cdc195",
+    "conservativeFund": "0x188baa0f8ee99ae934c3a03fdce41dc407affbbf9b44fb87b50ddc90e872de08",
+    "growthFund": "0x29f3d8cc5598ad39c9a1337324d74ac07cea0fea061a3d7159d2eb3a7335f24b",
+    "fundFactory": "0x473f2f116d1ace5eb6fec306e8f6b8a8644811de27ef16ef65ffaf1f5a8b837f"
+  },
+  "assetPolicies": [
+    {
+      "asset": "0x29c74C5b5288C2e1D70064AFcB433Af49E82568d",
+      "symbol": "tWETH",
+      "decimals": 18,
+      "oracle": "0x305F8bD5e3eF79E97e831F926f2FE377209cc7cC",
+      "adapter": "0x9e993d65c1963c8dF7f594F43CBcDc401E93D0A6",
+      "valuationMaxAge": 604800,
+      "tradeMaxAge": 604800,
+      "maxExposureBps": 7000,
+      "admissionEnabled": true,
+      "buyEnabled": true,
+      "sellEnabled": true,
+      "assetClass": "TEST_CRYPTO",
+      "issuerId": "RAFA_TEST",
+      "route": {
+        "stablePair": false,
+        "factory": "0x0000000000000000000000000000000000facade"
+      }
+    }
+  ],
+  "funds": [
+    {
+      "address": "0xb9141599802E21C563DAA0886B5AF6d21BBCb3Da",
+      "name": "RAFA Testnet Cash",
+      "symbol": "rCASH",
+      "depositCap": "1000000000000",
+      "performanceFeeBps": 0,
+      "maxTradeSlippageBps": 500,
+      "maxTradeValueBps": 5000,
+      "initialTotalAssets": "900000000",
+      "initialTestWethBalance": "0"
+    },
+    {
+      "address": "0x5bF8618c358900D07b8334d974dc48121A19E098",
+      "name": "RAFA Testnet Conservative",
+      "symbol": "rSAFE",
+      "depositCap": "1000000000000",
+      "performanceFeeBps": 0,
+      "maxTradeSlippageBps": 500,
+      "maxTradeValueBps": 5000,
+      "maxTestWethExposureBps": 3000,
+      "initialTotalAssets": "2500000000",
+      "initialTestWethBalance": "125000000000000000"
+    },
+    {
+      "address": "0x3e8A15B115DF2D2C86D102BB3dd487b27dA6e7a1",
+      "name": "RAFA Testnet Balanced",
+      "symbol": "rBAL",
+      "depositCap": "1000000000000",
+      "performanceFeeBps": 0,
+      "maxTradeSlippageBps": 500,
+      "maxTradeValueBps": 5000,
+      "maxTestWethExposureBps": 7000,
+      "initialTotalAssets": "2000000000",
+      "initialTestWethBalance": "200000000000000000"
+    },
+    {
+      "address": "0x1aAC9A351819DC49C00378a0c40f5f9d3376e7CD",
+      "name": "RAFA Testnet Growth",
+      "symbol": "rGROW",
+      "depositCap": "1000000000000",
+      "performanceFeeBps": 0,
+      "maxTradeSlippageBps": 500,
+      "maxTradeValueBps": 5000,
+      "maxTestWethExposureBps": 7000,
+      "initialTotalAssets": "3000000000",
+      "initialTestWethBalance": "900000000000000000"
+    }
+  ],
+  "checks": {
+    "factoryFunds": 4,
+    "allFundsActive": true,
+    "allFundsUseAccountingAsset": "0x6677777160Cacd264105fF9309b02755E27710B5",
+    "allFundsUseRegistry": "0xe988d5D15093D1a0a3d05d8c8A831dc5b959ae5F",
+    "fundRuntimeBytecodeBytes": 22151,
+    "depositRedeemTradeLifecycle": true
+  },
+  "review": {
+    "engineeringReview": "SECURITY_REVIEW.md",
+    "independentAudit": null
+  },
+  "warning": "Testnet-only deployment using unrestricted mock tokens, a mock router, a fixed-price oracle, and a single EOA for all privileged roles."
+}

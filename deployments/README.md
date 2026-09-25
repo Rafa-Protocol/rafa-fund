@@ -1,6 +1,7 @@
 # Verified deployments
 
-No V2 contracts have been deployed from this repository revision.
+- `base-sepolia.json` — public testnet rehearsal using unrestricted mocks and a
+  fixed-price oracle. These addresses are not production-safe.
 
 For every deployment, add a chain-specific JSON file containing:
 

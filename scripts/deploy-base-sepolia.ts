@@ -21,12 +21,22 @@ if (deployerBalance === 0n) {
 async function deploy(name: string, args: unknown[] = []) {
   const contract = await ethers.deployContract(name, args);
   await contract.waitForDeployment();
-  console.log(`${name}: ${await contract.getAddress()}`);
+  const deploymentTransaction = contract.deploymentTransaction();
+  if (deploymentTransaction) await deploymentTransaction.wait(2);
+
+  const address = await contract.getAddress();
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if ((await ethers.provider.getCode(address)) !== "0x") break;
+    if (attempt === 19) throw new Error(`Deployment bytecode for ${name} was not visible at ${address}.`);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+
+  console.log(`${name}: ${address}`);
   return contract;
 }
 
-async function confirm(transaction: Promise<{ wait(): Promise<unknown> }>) {
-  await (await transaction).wait();
+async function confirm(transaction: Promise<{ wait(confirmations?: number): Promise<unknown> }>) {
+  await (await transaction).wait(2);
 }
 
 function fundParams(
