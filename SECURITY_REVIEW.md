@@ -1,4 +1,4 @@
-# RAFA Fund V2 security review
+# RAFA Fund Protocol security review
 
 Date: 2026-09-24
 
@@ -14,8 +14,8 @@ independent professional audit before production funds are accepted.
 - Chainlink price adapter
 - Base Sepolia deployment rehearsal
 
-Legacy `BaseETF` and `FundFactory` contracts are not deployment candidates and
-were excluded from the V2 security scope.
+The review covers the canonical protocol contracts. The superseded `BaseETF`
+and `FundFactory` prototypes have been removed from the active repository.
 
 ## Findings fixed
 
@@ -86,7 +86,5 @@ restricted-token claims, and multi-fund registration.
    requirements.
 5. Exposure checks cannot stop unsolicited token transfers; they stop new
    deposits and manager buys while allowing an orderly sell-side unwind.
-6. The legacy V1 contracts remain in the repository for reference and must not
-   be deployed as V2 funds.
-7. Commission an independent audit and run a time-boxed public testnet/bounty
+6. Commission an independent audit and run a time-boxed public testnet/bounty
    period before accepting real user assets.

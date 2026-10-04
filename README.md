@@ -1,20 +1,21 @@
 # RAFA Fund Protocol
 
-RAFA Fund Protocol V2 is a non-custodial, tokenized fund system for Base and
+RAFA Fund Protocol is a non-custodial, tokenized fund system for Base and
 Ethereum. Investors deposit one accounting asset, such as USDC, and receive
 ERC-20 fund shares. RAFA-operated traders can rebalance a fund only through
 assets, price oracles, risk limits, and execution adapters approved by the
 chain-local protocol registry.
 
-V2 lives alongside the original `BaseETF` and `FundFactory` prototypes. New
-deployments use `RafaFundV2`, `RafaAssetRegistry`, `FundFactoryV2`, and one
-reviewed trade adapter per venue.
+The canonical implementation uses `RafaFundV2`, `RafaAssetRegistry`,
+`FundFactoryV2`, and one reviewed trade adapter per venue. The `V2` suffixes
+remain in the deployed Solidity identifiers to preserve bytecode, address, and
+integration compatibility; they do not indicate a second supported protocol.
 
-> **Audit status:** V2 has automated tests but has not received an independent
-> security audit. Do not accept production deposits before the gates in
-> [SECURITY.md](./SECURITY.md) are complete.
+> **Audit status:** The protocol has automated tests but has not received an
+> independent security audit. Do not accept production deposits before the
+> gates in [SECURITY.md](./SECURITY.md) are complete.
 
-## V2 contracts
+## Protocol contracts
 
 - `RafaFundV2`: ERC-4626-compatible vault, NAV calculation, performance fees,
   guarded trading, fund-level exposure limits, and oracle-independent in-kind exits.
@@ -98,8 +99,3 @@ Hardhat Ignition modules are in `ignition/modules`; copy
 `ignition/parameters/example.json` and replace every placeholder. Mainnet
 deployment remains blocked until the independent audit and testnet rehearsals
 in [SECURITY.md](./SECURITY.md) are complete.
-
-## Legacy contracts
-
-`BaseETF.sol` and `FundFactory.sol` are retained only to preserve prototype
-history. They are not production deployment targets.

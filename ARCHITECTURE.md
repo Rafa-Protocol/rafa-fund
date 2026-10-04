@@ -1,4 +1,4 @@
-# RAFA Fund Protocol V2 architecture
+# RAFA Fund Protocol architecture
 
 ## System model
 
@@ -70,7 +70,7 @@ implements `ITradeAdapter`; fund bytecode does not change.
 
 Each vault is an immutable `RafaFundV2`. `FundFactoryV2` is an official-fund
 registry instead of a bytecode factory, keeping contracts below EVM size limits
-and avoiding upgrade authority. Registration checks the V2 implementation
+and avoiding upgrade authority. Registration checks the canonical implementation
 marker, expected accounting asset, expected asset registry, and maximum
 performance fee. The Safe must also verify bytecode and constructor arguments;
 the marker alone is not proof of identity.

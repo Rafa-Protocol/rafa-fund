@@ -2,7 +2,7 @@
 
 ## Current status
 
-RAFA Fund Protocol V2 is pre-audit software. Automated tests and compiler checks
+RAFA Fund Protocol is pre-audit software. Automated tests and compiler checks
 are not substitutes for an independent review. Do not enable production
 deposits on Base or Ethereum until all gates below are complete.
 
