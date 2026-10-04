@@ -11,10 +11,6 @@ The canonical implementation uses `RafaFundV2`, `RafaAssetRegistry`,
 remain in the deployed Solidity identifiers to preserve bytecode, address, and
 integration compatibility; they do not indicate a second supported protocol.
 
-> **Audit status:** The protocol has automated tests but has not received an
-> independent security audit. Do not accept production deposits before the
-> gates in [SECURITY.md](./SECURITY.md) are complete.
-
 ## Protocol contracts
 
 - `RafaFundV2`: ERC-4626-compatible vault, NAV calculation, performance fees,
