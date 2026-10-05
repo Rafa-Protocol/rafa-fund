@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.34;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
@@ -14,6 +14,8 @@ import {RafaFundV2} from "./RafaFundV2.sol";
 contract FundFactoryV2 is Ownable2Step {
     bytes32 public constant EXPECTED_FUND_IMPLEMENTATION_ID = keccak256("RAFA_FUND_V2");
     uint16 public constant ABSOLUTE_MAX_PERFORMANCE_FEE_BPS = 3_000;
+    uint16 public constant MAXIMUM_REGISTERED_FUND_SLIPPAGE_BPS = 200;
+    uint48 public constant MINIMUM_ADMIN_TRANSFER_DELAY = 1 days;
 
     uint16 public immutable maximumPerformanceFeeBps;
     address public immutable accountingAsset;
@@ -26,11 +28,13 @@ contract FundFactoryV2 is Ownable2Step {
     error InvalidAddress();
     error InvalidMaximumPerformanceFee(uint256 feeBps);
     error PerformanceFeeAboveMaximum(uint256 requestedFeeBps, uint256 maximumFeeBps);
+    error TradeSlippageAboveMaximum(uint256 requestedSlippageBps, uint256 maximumSlippageBps);
+    error AdminTransferDelayBelowMinimum(uint256 requestedDelay, uint256 minimumDelay);
     error UnknownFund(address fund);
     error FundAlreadyRegistered(address fund);
     error InvalidFundConfiguration(address fund);
 
-    event FundCreated(
+    event FundRegistered(
         uint256 indexed fundId,
         address indexed fund,
         address indexed admin,
@@ -77,13 +81,21 @@ contract FundFactoryV2 is Ownable2Step {
         if (fundPerformanceFeeBps > maximumPerformanceFeeBps) {
             revert PerformanceFeeAboveMaximum(fundPerformanceFeeBps, maximumPerformanceFeeBps);
         }
+        uint256 fundTradeSlippageBps = candidate.maxTradeSlippageBps();
+        if (fundTradeSlippageBps > MAXIMUM_REGISTERED_FUND_SLIPPAGE_BPS) {
+            revert TradeSlippageAboveMaximum(fundTradeSlippageBps, MAXIMUM_REGISTERED_FUND_SLIPPAGE_BPS);
+        }
+        uint256 fundAdminTransferDelay = candidate.defaultAdminDelay();
+        if (fundAdminTransferDelay < MINIMUM_ADMIN_TRANSFER_DELAY) {
+            revert AdminTransferDelayBelowMinimum(fundAdminTransferDelay, MINIMUM_ADMIN_TRANSFER_DELAY);
+        }
 
         uint256 fundId = _funds.length;
         _funds.push(fund);
         isFund[fund] = true;
         isActiveFund[fund] = true;
 
-        emit FundCreated(
+        emit FundRegistered(
             fundId, fund, candidate.defaultAdmin(), candidate.name(), candidate.symbol(), candidate.metadataURI()
         );
     }

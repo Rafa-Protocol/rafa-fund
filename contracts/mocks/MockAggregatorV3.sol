@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.34;
 
 import {IAggregatorV3} from "../interfaces/IAggregatorV3.sol";
 

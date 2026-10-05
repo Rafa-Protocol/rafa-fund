@@ -30,7 +30,7 @@
     "guardian": "0x0000000000000000000000000000000000000007",
     "feeRecipient": "0x0000000000000000000000000000000000000008",
     "performanceFeeBps": 2000,
-    "maxTradeSlippageBps": 300,
+    "maxTradeSlippageBps": 200,
     "maxTradeValueBps": 2500,
     "adminTransferDelay": 86400,
     "depositCap": 1000000000000
@@ -39,6 +39,8 @@
     "assetUsdFeed": "0x0000000000000000000000000000000000000009",
     "accountingAssetUsdFeed": "0x0000000000000000000000000000000000000010",
     "sequencerUptimeFeed": "0x0000000000000000000000000000000000000011",
-    "sequencerGracePeriod": 3600
+    "sequencerGracePeriod": 3600,
+    "minimumPriceWad": "1500000000000000000000",
+    "maximumPriceWad": "2500000000000000000000"
   }
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.34;
 
 /// @notice Executes an exact-input swap for a RAFA fund.
 /// @dev The caller approves exactly `amountIn`. An adapter must pull no more

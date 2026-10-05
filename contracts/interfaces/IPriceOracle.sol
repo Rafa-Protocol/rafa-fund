@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.34;
 
 /// @notice Returns the price of one whole asset token in accounting-asset units.
 /// @dev The price is always scaled to 18 decimals. `updatedAt` is the timestamp
