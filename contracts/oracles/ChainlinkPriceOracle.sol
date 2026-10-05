@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.34;
 
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IAggregatorV3} from "../interfaces/IAggregatorV3.sol";
@@ -17,6 +17,8 @@ contract ChainlinkPriceOracle is IPriceOracle {
     IAggregatorV3 public immutable accountingAssetUsdFeed;
     IAggregatorV3 public immutable sequencerUptimeFeed;
     uint256 public immutable sequencerGracePeriod;
+    uint256 public immutable minimumPriceWad;
+    uint256 public immutable maximumPriceWad;
 
     uint8 public immutable assetFeedDecimals;
     uint8 public immutable accountingAssetFeedDecimals;
@@ -25,7 +27,8 @@ contract ChainlinkPriceOracle is IPriceOracle {
     error UnsupportedFeedDecimals(uint8 decimals);
     error InvalidOracleAnswer(address feed, int256 answer);
     error InvalidOracleTimestamp(address feed, uint256 updatedAt);
-    error IncompleteOracleRound(address feed, uint80 roundId, uint80 answeredInRound);
+    error InvalidPriceBounds(uint256 minimumPriceWad, uint256 maximumPriceWad);
+    error OraclePriceOutsideBounds(uint256 priceWad, uint256 minimumPriceWad, uint256 maximumPriceWad);
     error SequencerDown();
     error SequencerGracePeriodActive(uint256 startedAt, uint256 gracePeriod);
 
@@ -33,16 +36,23 @@ contract ChainlinkPriceOracle is IPriceOracle {
         address assetUsdFeed_,
         address accountingAssetUsdFeed_,
         address sequencerUptimeFeed_,
-        uint256 sequencerGracePeriod_
+        uint256 sequencerGracePeriod_,
+        uint256 minimumPriceWad_,
+        uint256 maximumPriceWad_
     ) {
         if (assetUsdFeed_ == address(0) || accountingAssetUsdFeed_ == address(0)) revert InvalidAddress();
         if (assetUsdFeed_.code.length == 0 || accountingAssetUsdFeed_.code.length == 0) revert InvalidAddress();
         if (sequencerUptimeFeed_ != address(0) && sequencerUptimeFeed_.code.length == 0) revert InvalidAddress();
+        if (minimumPriceWad_ == 0 || maximumPriceWad_ <= minimumPriceWad_) {
+            revert InvalidPriceBounds(minimumPriceWad_, maximumPriceWad_);
+        }
 
         assetUsdFeed = IAggregatorV3(assetUsdFeed_);
         accountingAssetUsdFeed = IAggregatorV3(accountingAssetUsdFeed_);
         sequencerUptimeFeed = IAggregatorV3(sequencerUptimeFeed_);
         sequencerGracePeriod = sequencerGracePeriod_;
+        minimumPriceWad = minimumPriceWad_;
+        maximumPriceWad = maximumPriceWad_;
 
         uint8 assetDecimals = IAggregatorV3(assetUsdFeed_).decimals();
         uint8 accountingDecimals = IAggregatorV3(accountingAssetUsdFeed_).decimals();
@@ -61,6 +71,9 @@ contract ChainlinkPriceOracle is IPriceOracle {
             _readFeed(accountingAssetUsdFeed, accountingAssetFeedDecimals);
 
         priceWad = Math.mulDiv(assetUsdWad, 1e18, accountingUsdWad);
+        if (priceWad < minimumPriceWad || priceWad > maximumPriceWad) {
+            revert OraclePriceOutsideBounds(priceWad, minimumPriceWad, maximumPriceWad);
+        }
         updatedAt = Math.min(assetUpdatedAt, accountingUpdatedAt);
     }
 
@@ -79,12 +92,9 @@ contract ChainlinkPriceOracle is IPriceOracle {
         view
         returns (uint256 answerWad, uint256 updatedAt)
     {
-        (uint80 roundId, int256 answer,, uint256 feedUpdatedAt, uint80 answeredInRound) = feed.latestRoundData();
+        (, int256 answer,, uint256 feedUpdatedAt,) = feed.latestRoundData();
         if (answer <= 0 || feedUpdatedAt == 0) revert InvalidOracleAnswer(address(feed), answer);
         if (feedUpdatedAt > block.timestamp) revert InvalidOracleTimestamp(address(feed), feedUpdatedAt);
-        if (answeredInRound < roundId) {
-            revert IncompleteOracleRound(address(feed), roundId, answeredInRound);
-        }
 
         answerWad = uint256(answer) * (10 ** (WAD_DECIMALS - feedDecimals));
         updatedAt = feedUpdatedAt;

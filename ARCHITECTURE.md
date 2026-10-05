@@ -35,6 +35,19 @@ from adding an asset, stop further buying, and keep selling enabled for an
 orderly unwind. Existing funds read the registry on each trade and valuation,
 so a protocol policy or exposure reduction applies without redeploying them.
 
+First-time asset configuration validates an ERC-20 token's reported decimals
+when bytecode is available. Replacing an existing oracle, adapter, decimals,
+freshness setting, exposure cap, class, or issuer requires this sequence:
+
+1. disable admission and buying while optionally preserving sells;
+2. publish the proposed policy onchain;
+3. wait at least 48 hours;
+4. execute while the asset remains disabled; and
+5. re-enable admission or buying in a separate transaction after verification.
+
+A protocol exposure cap can be reduced immediately but cannot be raised through
+that fast path.
+
 Discovery is explicitly off-chain. Catalog files do not configure the registry,
 and no discovery script has a Safe key or an automatic admission path.
 
@@ -63,8 +76,11 @@ each asset, and the fund approves only the exact input amount for one call.
 
 Both adapters return output directly to the fund. The fund checks actual input
 spent, actual output received, deadline, oracle-relative slippage, per-trade NAV
-limit, and post-buy exposure. Adding another venue requires a new adapter that
-implements `ITradeAdapter`; fund bytecode does not change.
+limit, rolling 24-hour notional, cumulative oracle-relative loss, and post-buy
+exposure. Official funds accept at most 2% oracle-relative slippage, can trade at
+most 100% of NAV in aggregate per 24-hour window, and auto-pause after more than
+1% of NAV in cumulative oracle-relative loss. Adding another venue requires a
+new adapter that implements `ITradeAdapter`; fund bytecode does not change.
 
 ## Deployment and official funds
 
@@ -72,8 +88,9 @@ Each vault is an immutable `RafaFundV2`. `FundFactoryV2` is an official-fund
 registry instead of a bytecode factory, keeping contracts below EVM size limits
 and avoiding upgrade authority. Registration checks the canonical implementation
 marker, expected accounting asset, expected asset registry, and maximum
-performance fee. The Safe must also verify bytecode and constructor arguments;
-the marker alone is not proof of identity.
+performance fee. Registration also rejects funds configured above 2% slippage
+or below a one-day default-admin transfer delay. The Safe must still verify
+bytecode and constructor arguments; the marker alone is not proof of identity.
 
 ## Roles
 
@@ -102,6 +119,12 @@ Standard ERC-4626 withdrawals use idle accounting-asset liquidity. `redeemInKind
 burns shares and transfers a proportional slice of every held token without a
 DEX or oracle, including during price, venue, or pause incidents. Recipients may
 still be subject to issuer transfer restrictions.
+
+Shares minted by a deposit, mint, or performance-fee accrual cannot be used for
+a cash exit or transferred for six hours. This reduces stale-NAV deposit/exit
+arbitrage while preserving immediate proportional in-kind exits. The delay is
+share-based: previously unlocked shares remain usable when an account receives
+newly minted locked shares.
 
 Performance fees mint shares only on profit above a per-share high-water mark.
 They accrue before standard entry/exit and can be called permissionlessly. If

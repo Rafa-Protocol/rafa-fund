@@ -33,8 +33,16 @@ integration compatibility; they do not indicate a second supported protocol.
   an orderly unwind.
 - Managers can swap only between the accounting asset and an approved holding;
   output always returns to the vault.
+- Official funds are limited to 2% oracle-relative slippage. A rolling 24-hour
+  budget caps aggregate trade notional at 100% of NAV and automatically pauses
+  trading when cumulative oracle-relative loss exceeds 1% of NAV.
+- Newly minted shares have a six-hour cash-exit and transfer delay. Proportional
+  in-kind redemption remains available immediately for emergency exits.
 - Deposits, cash exits, fees, and trades use a strict price-freshness window.
   Read-only NAV can use a longer window, while in-kind exits need no oracle.
+- Existing asset policies can change only after admission and buying are
+  disabled, a proposal is published, and a 48-hour delay has elapsed. Execution
+  does not silently re-enable the asset.
 - Base B20 native tokens are supported even when `code.length` is zero. They
   still require reviewed ERC-20 behavior, an official total-return-aware feed,
   legal eligibility, and executable liquidity before approval.
@@ -42,6 +50,10 @@ integration compatibility; they do not indicate a second supported protocol.
 - Contracts are immutable and do not use proxies.
 
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the complete model.
+See [OPERATIONS.md](./OPERATIONS.md) for the production role, monitoring, and
+incident-response runbook. Independent reports and RAFA's remediation record
+are published in the
+[security-audits repository](https://github.com/Rafa-Protocol/security-audits).
 
 ## Development
 
@@ -93,5 +105,5 @@ each chain has its own registry, adapters, oracles, factory, and funds.
 
 Hardhat Ignition modules are in `ignition/modules`; copy
 `ignition/parameters/example.json` and replace every placeholder. Mainnet
-deployment remains blocked until the independent audit and testnet rehearsals
-in [SECURITY.md](./SECURITY.md) are complete.
+deployment remains blocked until the independent re-review and testnet
+rehearsals in [SECURITY.md](./SECURITY.md) are complete.

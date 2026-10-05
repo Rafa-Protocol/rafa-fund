@@ -1,7 +1,10 @@
 # Verified deployments
 
-- `base-sepolia.json` — public testnet rehearsal using unrestricted mocks and a
-  fixed-price oracle. These addresses are not production-safe.
+- `base-sepolia.json` — historical public testnet rehearsal at commit
+  `00cff8a`, using unrestricted mocks and a fixed-price oracle. It predates the
+  October 2026 audit remediations and must not be treated as the current
+  implementation or reused for production. A new rehearsal record will be
+  added after the independent re-review.
 
 For every deployment, add a chain-specific JSON file containing:
 

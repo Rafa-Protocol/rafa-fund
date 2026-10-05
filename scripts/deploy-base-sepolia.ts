@@ -56,9 +56,9 @@ function fundParams(
     guardian: deployerAddress,
     feeRecipient: deployerAddress,
     performanceFeeBps: 0,
-    maxTradeSlippageBps: 500,
+    maxTradeSlippageBps: 200,
     maxTradeValueBps: 5_000,
-    adminTransferDelay: 0,
+    adminTransferDelay: 24 * 60 * 60,
     depositCap: 1_000_000n * USDC,
   };
 }
@@ -142,7 +142,7 @@ await confirm(
 
 await confirm(testUsdc.approve(await cashFund.getAddress(), 1_000n * USDC));
 await confirm(cashFund.depositWithSlippage(1_000n * USDC, deployerAddress, 1_000n * WAD));
-await confirm(cashFund.redeemWithSlippage(100n * WAD, deployerAddress, deployerAddress, 99n * USDC));
+await confirm(cashFund.redeemInKind(100n * WAD, deployerAddress, deployerAddress));
 
 await confirm(testUsdc.approve(await balancedFund.getAddress(), 2_000n * USDC));
 await confirm(balancedFund.depositWithSlippage(2_000n * USDC, deployerAddress, 2_000n * WAD));

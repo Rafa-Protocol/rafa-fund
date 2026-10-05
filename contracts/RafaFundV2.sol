@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity 0.8.34;
 
 import {AccessControlDefaultAdminRules} from
     "@openzeppelin/contracts/access/extensions/AccessControlDefaultAdminRules.sol";
@@ -26,7 +26,12 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     bytes32 public constant IMPLEMENTATION_ID = keccak256("RAFA_FUND_V2");
     uint256 public constant BPS_DENOMINATOR = 10_000;
     uint16 public constant MAX_PERFORMANCE_FEE_BPS = 3_000;
-    uint16 public constant MAX_TRADE_SLIPPAGE_BPS = 2_000;
+    uint16 public constant MAX_TRADE_SLIPPAGE_BPS = 500;
+    uint16 public constant MAX_TRADE_WINDOW_NOTIONAL_BPS = 10_000;
+    uint16 public constant MAX_TRADE_WINDOW_LOSS_BPS = 100;
+    uint48 public constant TRADE_RISK_WINDOW = 1 days;
+    uint48 public constant CASH_EXIT_DELAY = 6 hours;
+    uint256 public constant MAX_REMOVAL_DUST_WAD = 1e16;
     uint8 public constant MAX_ASSETS = 10;
     uint256 public constant IN_KIND_TRANSFER_GAS = 300_000;
 
@@ -67,12 +72,17 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     string public metadataURI;
     bool public depositsPaused;
     bool public tradingPaused;
+    uint48 public tradeRiskWindowStartedAt;
+    uint256 public tradeWindowNotional;
+    uint256 public tradeWindowOracleLoss;
 
     address[] private _activeAssets;
     mapping(address assetToken => AssetConfig config) private _assetConfigs;
     mapping(address assetToken => uint256 indexPlusOne) private _assetIndexPlusOne;
     mapping(address claimant => mapping(address token => uint256 amount)) public pendingClaims;
     mapping(address token => uint256 amount) public totalPendingClaims;
+    mapping(address account => uint256 shares) public lockedCashExitShares;
+    mapping(address account => uint48 availableAt) public cashExitAvailableAt;
 
     error InvalidAddress();
     error InvalidAmount();
@@ -83,6 +93,7 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     error DepositsArePaused();
     error TradingIsPaused();
     error DepositCapExceeded(uint256 requestedAssets, uint256 maximumAssets);
+    error ExposureLimitsBreached();
     error InsufficientShares(uint256 actualShares, uint256 minimumShares);
     error InsufficientAssets(uint256 actualAssets, uint256 minimumAssets);
     error AssetAlreadySupported(address assetToken);
@@ -92,6 +103,8 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     error AssetSellingDisabled(address assetToken);
     error AssetPolicyNotConfigured(address assetToken);
     error AssetBalanceNotZero(address assetToken, uint256 balance);
+    error AssetPendingClaimsExist(address assetToken, uint256 claims);
+    error AssetDustValueAboveLimit(address assetToken, uint256 valueWad, uint256 maximumValueWad);
     error MaximumAssetsReached();
     error InvalidOraclePrice(address assetToken, uint256 price);
     error StaleOraclePrice(address assetToken, uint256 updatedAt, uint256 maxPriceAge);
@@ -99,12 +112,16 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     error TradeDeadlineExpired(uint256 deadline);
     error TradeSlippageTooHigh(uint256 minimumAmountOut, uint256 oracleMinimumAmountOut);
     error TradeValueAboveLimit(uint256 tradeValue, uint256 maximumTradeValue);
+    error TradeWindowLimitExceeded(uint256 requestedValue, uint256 remainingValue);
+    error TradeRiskWindowActive(uint256 availableAt);
+    error RiskLimitIncreaseNotAllowed(uint256 currentLimit, uint256 requestedLimit);
     error AssetExposureAboveLimit(address assetToken, uint256 exposureBps, uint256 maximumExposureBps);
     error InsufficientLiquidity(uint256 requestedAssets, uint256 availableAssets);
     error CannotRecoverSupportedAsset(address assetToken);
     error InvalidTradeInput(uint256 expectedAmount, uint256 actualAmount);
     error UnauthorizedSelfCall();
     error NoPendingClaim(address claimant, address token);
+    error CashExitLocked(address owner, uint256 requestedShares, uint256 unlockedShares, uint256 availableAt);
 
     event AssetAdded(
         address indexed assetToken,
@@ -132,6 +149,11 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     event FeeRecipientUpdated(address indexed previousRecipient, address indexed newRecipient);
     event DepositCapUpdated(uint256 previousCap, uint256 newCap);
     event MaxTradeValueUpdated(uint16 previousLimitBps, uint16 newLimitBps);
+    event TradeRiskWindowReset(uint48 indexed startedAt);
+    event TradeOracleLossRecorded(uint256 loss, uint256 cumulativeLoss);
+    event TradingAutoPaused(uint256 cumulativeLoss, uint256 maximumLoss);
+    event CashExitLockUpdated(address indexed account, uint256 lockedShares, uint48 availableAt);
+    event AssetDustSwept(address indexed assetToken, address indexed recipient, uint256 amount);
     event MetadataURIUpdated(string previousURI, string newURI);
     event DepositsPauseUpdated(bool paused);
     event TradingPauseUpdated(bool paused);
@@ -190,7 +212,7 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     function maxDeposit(address) public view override returns (uint256) {
         if (depositsPaused) return 0;
         uint256 currentAssets = totalAssets();
-        if (!_exposuresWithinLimits(currentAssets)) return 0;
+        if (!_exposuresWithinLimits(currentAssets, false)) return 0;
         return currentAssets >= depositCap ? 0 : depositCap - currentAssets;
     }
 
@@ -199,12 +221,12 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     }
 
     function maxWithdraw(address owner) public view override returns (uint256) {
-        uint256 ownerAssets = super.maxWithdraw(owner);
+        uint256 ownerAssets = _convertToAssets(_unlockedCashExitShares(owner), Math.Rounding.Floor);
         return Math.min(ownerAssets, _availableBalance(asset()));
     }
 
     function maxRedeem(address owner) public view override returns (uint256) {
-        uint256 ownerShares = balanceOf(owner);
+        uint256 ownerShares = _unlockedCashExitShares(owner);
         if (ownerShares == 0) return 0;
 
         uint256 liquidAssets = _availableBalance(asset());
@@ -215,8 +237,9 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     }
 
     function deposit(uint256 assets, address receiver) public override nonReentrant returns (uint256 shares) {
-        _accruePerformanceFee();
-        shares = _depositWithMinimum(assets, receiver, 0);
+        uint256 settlementAssets = settlementTotalAssets();
+        _accruePerformanceFee(settlementAssets);
+        shares = _depositWithMinimum(assets, receiver, 0, settlementAssets);
     }
 
     function depositWithSlippage(uint256 assets, address receiver, uint256 minSharesOut)
@@ -224,13 +247,16 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         nonReentrant
         returns (uint256 shares)
     {
-        _accruePerformanceFee();
-        shares = _depositWithMinimum(assets, receiver, minSharesOut);
+        uint256 settlementAssets = settlementTotalAssets();
+        _accruePerformanceFee(settlementAssets);
+        shares = _depositWithMinimum(assets, receiver, minSharesOut, settlementAssets);
     }
 
     function mint(uint256 shares, address receiver) public override nonReentrant returns (uint256 assets) {
-        _accruePerformanceFee();
+        uint256 settlementAssets = settlementTotalAssets();
+        _accruePerformanceFee(settlementAssets);
         if (depositsPaused) revert DepositsArePaused();
+        if (!_exposuresWithinLimits(settlementAssets, true)) revert ExposureLimitsBreached();
 
         uint256 maximumShares = maxMint(receiver);
         if (shares == 0 || shares > maximumShares) revert DepositCapExceeded(shares, maximumShares);
@@ -245,11 +271,13 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         nonReentrant
         returns (uint256 shares)
     {
-        _accruePerformanceFee();
+        uint256 settlementAssets = settlementTotalAssets();
+        _accruePerformanceFee(settlementAssets);
         uint256 availableAssets = maxWithdraw(owner);
         if (assets == 0 || assets > availableAssets) revert InsufficientLiquidity(assets, availableAssets);
 
         shares = previewWithdraw(assets);
+        _requireCashExitUnlocked(owner, shares);
         _withdraw(_msgSender(), receiver, owner, assets, shares);
     }
 
@@ -259,7 +287,8 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         nonReentrant
         returns (uint256 assets)
     {
-        _accruePerformanceFee();
+        uint256 settlementAssets = settlementTotalAssets();
+        _accruePerformanceFee(settlementAssets);
         assets = _redeemWithMinimum(shares, receiver, owner, 0);
     }
 
@@ -268,13 +297,17 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         nonReentrant
         returns (uint256 assets)
     {
-        _accruePerformanceFee();
+        uint256 settlementAssets = settlementTotalAssets();
+        _accruePerformanceFee(settlementAssets);
         assets = _redeemWithMinimum(shares, receiver, owner, minAssetsOut);
     }
 
     /// @notice Burns shares and transfers a proportional slice of every held
     ///         token. This path intentionally does not require functioning
     ///         oracles or DEX liquidity and remains available during pauses.
+    /// @dev If settlement prices are unavailable, fee accrual is skipped so an
+    ///      emergency exit cannot be blocked. The exiting holder may therefore
+    ///      avoid an otherwise-accrued performance fee during that outage.
     function redeemInKind(uint256 shares, address receiver, address owner)
         external
         nonReentrant
@@ -345,11 +378,11 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     ///         trader can still sell assets to restore compliance.
     function exposuresCompliant() external view returns (bool) {
         uint256 managedAssets = totalAssets();
-        return _exposuresWithinLimits(managedAssets);
+        return _exposuresWithinLimits(managedAssets, false);
     }
 
     function accruePerformanceFee() external nonReentrant returns (uint256 feeShares) {
-        feeShares = _accruePerformanceFee();
+        feeShares = _accruePerformanceFee(settlementTotalAssets());
     }
 
     // ---------------------------------------------------------------------
@@ -366,11 +399,14 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         if (amountIn == 0) revert InvalidAmount();
         if (deadline < block.timestamp) revert TradeDeadlineExpired(deadline);
 
-        (address adapter, uint256 oracleMinimum) = _validateTrade(tokenIn, tokenOut, amountIn);
+        (address adapter, uint256 oracleMinimum, uint256 tradeValue, uint256 managedAssets, address managedToken) =
+            _validateTrade(tokenIn, tokenOut, amountIn);
         if (minAmountOut < oracleMinimum) revert TradeSlippageTooHigh(minAmountOut, oracleMinimum);
 
+        _consumeTradeBudget(tradeValue, managedAssets);
         amountOut = _executeTrade(tokenIn, tokenOut, amountIn, minAmountOut, deadline, adapter);
         if (tokenIn == asset()) _enforceExposure(tokenOut);
+        _recordTradeOutcome(tokenOut, managedToken, amountOut, tradeValue, managedAssets);
         emit TradeExecuted(_msgSender(), tokenIn, tokenOut, amountIn, amountOut);
     }
 
@@ -411,8 +447,22 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         AssetConfig memory config = _assetConfigs[assetToken];
         if (!config.supported) revert AssetNotSupported(assetToken);
 
+        uint256 claims = totalPendingClaims[assetToken];
+        if (claims != 0) revert AssetPendingClaimsExist(assetToken, claims);
+
         uint256 balance = IERC20(assetToken).balanceOf(address(this));
-        if (balance != 0) revert AssetBalanceNotZero(assetToken, balance);
+        if (balance != 0) {
+            IRafaAssetRegistry.AssetPolicy memory policy = _assetPolicy(assetToken);
+            if (policy.admissionEnabled || policy.buyEnabled) revert AssetBalanceNotZero(assetToken, balance);
+
+            uint256 value = _valueInAccountingAsset(assetToken, balance, policy, policy.tradeMaxAge);
+            uint256 valueWad = _toWad(value, accountingAssetDecimals);
+            if (valueWad > MAX_REMOVAL_DUST_WAD) {
+                revert AssetDustValueAboveLimit(assetToken, valueWad, MAX_REMOVAL_DUST_WAD);
+            }
+            IERC20(assetToken).safeTransfer(feeRecipient, balance);
+            emit AssetDustSwept(assetToken, feeRecipient, balance);
+        }
 
         uint256 index = _assetIndexPlusOne[assetToken] - 1;
         uint256 lastIndex = _activeAssets.length - 1;
@@ -436,15 +486,17 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     }
 
     function setMaxTradeValueBps(uint16 newLimitBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (newLimitBps == 0 || newLimitBps > BPS_DENOMINATOR) revert InvalidRiskLimit(newLimitBps);
         uint16 previousLimitBps = maxTradeValueBps;
+        if (newLimitBps == 0 || newLimitBps >= previousLimitBps) {
+            revert RiskLimitIncreaseNotAllowed(previousLimitBps, newLimitBps);
+        }
         maxTradeValueBps = newLimitBps;
         emit MaxTradeValueUpdated(previousLimitBps, newLimitBps);
     }
 
     function setFeeRecipient(address newRecipient) external nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newRecipient == address(0)) revert InvalidAddress();
-        _accruePerformanceFee();
+        _accruePerformanceFee(settlementTotalAssets());
         address previousRecipient = feeRecipient;
         feeRecipient = newRecipient;
         emit FeeRecipientUpdated(previousRecipient, newRecipient);
@@ -481,6 +533,13 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
 
     function unpauseTrading() external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (tradingPaused) {
+            _rollTradeRiskWindow();
+            uint256 maximumLoss = Math.mulDiv(
+                settlementTotalAssets(), MAX_TRADE_WINDOW_LOSS_BPS, BPS_DENOMINATOR
+            );
+            if (tradeWindowOracleLoss > maximumLoss) {
+                revert TradeRiskWindowActive(uint256(tradeRiskWindowStartedAt) + TRADE_RISK_WINDOW);
+            }
             tradingPaused = false;
             emit TradingPauseUpdated(false);
         }
@@ -515,12 +574,18 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     // Internals
     // ---------------------------------------------------------------------
 
-    function _depositWithMinimum(uint256 assets, address receiver, uint256 minSharesOut)
+    function _depositWithMinimum(
+        uint256 assets,
+        address receiver,
+        uint256 minSharesOut,
+        uint256 settlementAssets
+    )
         private
         returns (uint256 shares)
     {
         if (depositsPaused) revert DepositsArePaused();
         if (assets == 0 || receiver == address(0)) revert InvalidAmount();
+        if (!_exposuresWithinLimits(settlementAssets, true)) revert ExposureLimitsBreached();
 
         uint256 maximumAssets = maxDeposit(receiver);
         if (assets > maximumAssets) revert DepositCapExceeded(assets, maximumAssets);
@@ -535,6 +600,7 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         returns (uint256 assets)
     {
         if (shares == 0 || receiver == address(0)) revert InvalidAmount();
+        _requireCashExitUnlocked(owner, shares);
         uint256 availableShares = maxRedeem(owner);
         if (shares > availableShares) {
             revert InsufficientLiquidity(previewRedeem(shares), _availableBalance(asset()));
@@ -553,8 +619,7 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         if (totalSupply() == 0) highWaterMarkWad = 1e18;
     }
 
-    function _accruePerformanceFee() private returns (uint256 feeShares) {
-        uint256 managedAssets = settlementTotalAssets();
+    function _accruePerformanceFee(uint256 managedAssets) private returns (uint256 feeShares) {
         uint256 supply = totalSupply();
         if (supply == 0 || performanceFeeBps == 0) return 0;
 
@@ -629,23 +694,30 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     function _validateTrade(address tokenIn, address tokenOut, uint256 amountIn)
         private
         view
-        returns (address adapter, uint256 oracleMinimum)
+        returns (
+            address adapter,
+            uint256 oracleMinimum,
+            uint256 tradeValue,
+            uint256 managedAssets,
+            address managedToken
+        )
     {
         bool inputIsAccountingAsset = tokenIn == asset();
         bool outputIsAccountingAsset = tokenOut == asset();
         if (inputIsAccountingAsset == outputIsAccountingAsset) revert InvalidTradePair(tokenIn, tokenOut);
 
-        address managedToken = inputIsAccountingAsset ? tokenOut : tokenIn;
+        managedToken = inputIsAccountingAsset ? tokenOut : tokenIn;
         AssetConfig memory config = _assetConfigs[managedToken];
         if (!config.supported) revert AssetNotSupported(managedToken);
         IRafaAssetRegistry.AssetPolicy memory policy = _assetPolicy(managedToken);
         if (inputIsAccountingAsset && !policy.buyEnabled) revert AssetBuyingDisabled(managedToken);
         if (outputIsAccountingAsset && !policy.sellEnabled) revert AssetSellingDisabled(managedToken);
 
-        uint256 tradeValue = inputIsAccountingAsset
+        tradeValue = inputIsAccountingAsset
             ? amountIn
             : _valueInAccountingAsset(tokenIn, amountIn, policy, policy.tradeMaxAge);
-        uint256 maximumTradeValue = Math.mulDiv(settlementTotalAssets(), maxTradeValueBps, BPS_DENOMINATOR);
+        managedAssets = settlementTotalAssets();
+        uint256 maximumTradeValue = Math.mulDiv(managedAssets, maxTradeValueBps, BPS_DENOMINATOR);
         if (tradeValue > maximumTradeValue) revert TradeValueAboveLimit(tradeValue, maximumTradeValue);
 
         uint256 expectedOut = inputIsAccountingAsset
@@ -702,7 +774,7 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         }
     }
 
-    function _exposuresWithinLimits(uint256 managedAssets) private view returns (bool) {
+    function _exposuresWithinLimits(uint256 managedAssets, bool settlementPrice) private view returns (bool) {
         if (managedAssets == 0) return true;
 
         uint256 length = _activeAssets.length;
@@ -714,12 +786,74 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
             AssetConfig memory config = _assetConfigs[assetToken];
             IRafaAssetRegistry.AssetPolicy memory policy = _assetPolicy(assetToken);
             uint256 effectiveMaximum = Math.min(uint256(config.maxExposureBps), uint256(policy.maxExposureBps));
-            uint256 assetValue = _valueInAccountingAsset(assetToken, balance, policy, policy.valuationMaxAge);
+            uint48 maxPriceAge = settlementPrice ? policy.tradeMaxAge : policy.valuationMaxAge;
+            uint256 assetValue = _valueInAccountingAsset(assetToken, balance, policy, maxPriceAge);
             uint256 exposureBps = Math.mulDiv(assetValue, BPS_DENOMINATOR, managedAssets, Math.Rounding.Ceil);
             if (exposureBps > effectiveMaximum) return false;
         }
 
         return true;
+    }
+
+    function _consumeTradeBudget(uint256 tradeValue, uint256 managedAssets) private {
+        _rollTradeRiskWindow();
+        uint256 maximumNotional =
+            Math.mulDiv(managedAssets, MAX_TRADE_WINDOW_NOTIONAL_BPS, BPS_DENOMINATOR);
+        uint256 usedNotional = tradeWindowNotional;
+        if (tradeValue > maximumNotional - Math.min(usedNotional, maximumNotional)) {
+            revert TradeWindowLimitExceeded(tradeValue, maximumNotional - Math.min(usedNotional, maximumNotional));
+        }
+        tradeWindowNotional = usedNotional + tradeValue;
+    }
+
+    function _recordTradeOutcome(
+        address tokenOut,
+        address managedToken,
+        uint256 amountOut,
+        uint256 tradeValue,
+        uint256 managedAssets
+    ) private {
+        uint256 outputValue = amountOut;
+        if (tokenOut != asset()) {
+            IRafaAssetRegistry.AssetPolicy memory policy = _assetPolicy(managedToken);
+            outputValue = _valueInAccountingAsset(tokenOut, amountOut, policy, policy.tradeMaxAge);
+        }
+        if (outputValue >= tradeValue) return;
+
+        uint256 loss = tradeValue - outputValue;
+        tradeWindowOracleLoss += loss;
+        emit TradeOracleLossRecorded(loss, tradeWindowOracleLoss);
+
+        uint256 maximumLoss = Math.mulDiv(managedAssets, MAX_TRADE_WINDOW_LOSS_BPS, BPS_DENOMINATOR);
+        if (tradeWindowOracleLoss > maximumLoss) {
+            tradingPaused = true;
+            emit TradingPauseUpdated(true);
+            emit TradingAutoPaused(tradeWindowOracleLoss, maximumLoss);
+        }
+    }
+
+    function _rollTradeRiskWindow() private {
+        uint48 startedAt = tradeRiskWindowStartedAt;
+        if (startedAt == 0 || block.timestamp >= uint256(startedAt) + TRADE_RISK_WINDOW) {
+            tradeRiskWindowStartedAt = uint48(block.timestamp);
+            tradeWindowNotional = 0;
+            tradeWindowOracleLoss = 0;
+            emit TradeRiskWindowReset(uint48(block.timestamp));
+        }
+    }
+
+    function _requireCashExitUnlocked(address owner, uint256 shares) private view {
+        uint256 unlockedShares = _unlockedCashExitShares(owner);
+        if (shares > unlockedShares) {
+            revert CashExitLocked(owner, shares, unlockedShares, cashExitAvailableAt[owner]);
+        }
+    }
+
+    function _unlockedCashExitShares(address owner) private view returns (uint256) {
+        uint256 ownerShares = balanceOf(owner);
+        if (block.timestamp >= cashExitAvailableAt[owner]) return ownerShares;
+        uint256 lockedShares = Math.min(lockedCashExitShares[owner], ownerShares);
+        return ownerShares - lockedShares;
     }
 
     function _amountFromAccountingAsset(
@@ -786,6 +920,46 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
 
     function _fromWad(uint256 amountWad, uint8 targetDecimals) private pure returns (uint256) {
         return amountWad / (10 ** (18 - targetDecimals));
+    }
+
+    function _update(address from, address to, uint256 value) internal override {
+        uint256 lockedBurned = 0;
+        uint256 priorLockedTo = 0;
+        uint48 priorAvailableAt = 0;
+
+        if (from != address(0)) {
+            uint256 fromBalance = balanceOf(from);
+            uint256 activeLocked = block.timestamp < cashExitAvailableAt[from]
+                ? Math.min(lockedCashExitShares[from], fromBalance)
+                : 0;
+            uint256 unlocked = fromBalance - activeLocked;
+            if (to != address(0) && value > unlocked) {
+                revert CashExitLocked(from, value, unlocked, cashExitAvailableAt[from]);
+            }
+            if (to == address(0) && value > unlocked) lockedBurned = value - unlocked;
+        }
+
+        if (from == address(0) && to != address(0)) {
+            priorAvailableAt = cashExitAvailableAt[to];
+            if (block.timestamp < priorAvailableAt) {
+                priorLockedTo = Math.min(lockedCashExitShares[to], balanceOf(to));
+            }
+        }
+
+        super._update(from, to, value);
+
+        if (lockedBurned != 0) {
+            lockedCashExitShares[from] -= lockedBurned;
+            emit CashExitLockUpdated(from, lockedCashExitShares[from], cashExitAvailableAt[from]);
+        }
+
+        if (from == address(0) && to != address(0) && value != 0) {
+            uint48 newAvailableAt = uint48(block.timestamp) + CASH_EXIT_DELAY;
+            if (priorAvailableAt > newAvailableAt) newAvailableAt = priorAvailableAt;
+            lockedCashExitShares[to] = priorLockedTo + value;
+            cashExitAvailableAt[to] = newAvailableAt;
+            emit CashExitLockUpdated(to, priorLockedTo + value, newAvailableAt);
+        }
     }
 
     function _decimalsOffset() internal view override returns (uint8) {

@@ -11,7 +11,7 @@ export default defineConfig({
           evmVersion: "cancun",
           optimizer: {
             enabled: true,
-            runs: 1_000,
+            runs: 200,
           },
         },
       },
@@ -21,7 +21,7 @@ export default defineConfig({
           evmVersion: "cancun",
           optimizer: {
             enabled: true,
-            runs: 1_000,
+            runs: 200,
           },
         },
       },
