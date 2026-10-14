@@ -915,11 +915,19 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     }
 
     function _toWad(uint256 amount, uint8 amountDecimals) private pure returns (uint256) {
-        return amount * (10 ** (18 - amountDecimals));
+        // Cast 18 to uint256 before subtraction to avoid any uint8 boundary ambiguity;
+        // although Solidity 0.8.x reverts on underflow, explicit typing documents intent
+        // and guarantees memory-safe multiplication in all compilation modes.
+        uint256 decimalsShift = 10 ** (uint256(18) - uint256(amountDecimals));
+        return amount * decimalsShift;
     }
 
     function _fromWad(uint256 amountWad, uint8 targetDecimals) private pure returns (uint256) {
-        return amountWad / (10 ** (18 - targetDecimals));
+        // Cast 18 to uint256 before subtraction to avoid any uint8 boundary ambiguity;
+        // although Solidity 0.8.x reverts on underflow, explicit typing documents intent
+        // and guarantees memory-safe division in all compilation modes.
+        uint256 decimalsShift = 10 ** (uint256(18) - uint256(targetDecimals));
+        return amountWad / decimalsShift;
     }
 
     function _update(address from, address to, uint256 value) internal override {
