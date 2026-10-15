@@ -256,10 +256,12 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         uint256 settlementAssets = settlementTotalAssets();
         _accruePerformanceFee(settlementAssets);
         if (depositsPaused) revert DepositsArePaused();
+        if (receiver == address(0)) revert InvalidAddress();
+        if (shares == 0) revert InvalidAmount();
         if (!_exposuresWithinLimits(settlementAssets, true)) revert ExposureLimitsBreached();
 
         uint256 maximumShares = maxMint(receiver);
-        if (shares == 0 || shares > maximumShares) revert DepositCapExceeded(shares, maximumShares);
+        if (shares > maximumShares) revert DepositCapExceeded(shares, maximumShares);
 
         assets = previewMint(shares);
         _deposit(_msgSender(), receiver, assets, shares);
@@ -273,6 +275,7 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
     {
         uint256 settlementAssets = settlementTotalAssets();
         _accruePerformanceFee(settlementAssets);
+        if (receiver == address(0)) revert InvalidAddress();
         uint256 availableAssets = maxWithdraw(owner);
         if (assets == 0 || assets > availableAssets) revert InsufficientLiquidity(assets, availableAssets);
 
@@ -313,7 +316,8 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         nonReentrant
         returns (address[] memory tokens, uint256[] memory amounts)
     {
-        if (shares == 0 || receiver == address(0)) revert InvalidAmount();
+        if (receiver == address(0)) revert InvalidAddress();
+        if (shares == 0) revert InvalidAmount();
         _tryAccruePerformanceFee();
         uint256 supply = totalSupply();
         if (supply == 0 || shares > balanceOf(owner)) revert InvalidAmount();
@@ -549,7 +553,8 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         external
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        if (recipient == address(0) || amount == 0) revert InvalidAmount();
+        if (recipient == address(0)) revert InvalidAddress();
+        if (amount == 0) revert InvalidAmount();
         if (assetToken == asset() || _assetConfigs[assetToken].supported) {
             revert CannotRecoverSupportedAsset(assetToken);
         }
@@ -584,7 +589,8 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         returns (uint256 shares)
     {
         if (depositsPaused) revert DepositsArePaused();
-        if (assets == 0 || receiver == address(0)) revert InvalidAmount();
+        if (receiver == address(0)) revert InvalidAddress();
+        if (assets == 0) revert InvalidAmount();
         if (!_exposuresWithinLimits(settlementAssets, true)) revert ExposureLimitsBreached();
 
         uint256 maximumAssets = maxDeposit(receiver);
@@ -599,7 +605,8 @@ contract RafaFundV2 is ERC4626, AccessControlDefaultAdminRules, ReentrancyGuard 
         private
         returns (uint256 assets)
     {
-        if (shares == 0 || receiver == address(0)) revert InvalidAmount();
+        if (receiver == address(0)) revert InvalidAddress();
+        if (shares == 0) revert InvalidAmount();
         _requireCashExitUnlocked(owner, shares);
         uint256 availableShares = maxRedeem(owner);
         if (shares > availableShares) {

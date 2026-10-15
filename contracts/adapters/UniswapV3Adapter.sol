@@ -39,7 +39,8 @@ contract UniswapV3Adapter is ITradeAdapter, Ownable2Step, ReentrancyGuard {
     }
 
     function configurePool(address assetToken, uint24 poolFee) external onlyOwner {
-        if (assetToken == address(0) || assetToken == accountingAsset || poolFee == 0) revert InvalidAddress();
+        if (assetToken == address(0) || assetToken == accountingAsset) revert InvalidAddress();
+        if (poolFee == 0) revert InvalidAmount();
         poolFees[assetToken] = poolFee;
         emit PoolConfigured(assetToken, poolFee);
     }
@@ -57,7 +58,8 @@ contract UniswapV3Adapter is ITradeAdapter, Ownable2Step, ReentrancyGuard {
         address recipient,
         uint256 deadline
     ) external nonReentrant returns (uint256 amountOut) {
-        if (amountIn == 0 || recipient == address(0)) revert InvalidAmount();
+        if (recipient == address(0)) revert InvalidAddress();
+        if (amountIn == 0) revert InvalidAmount();
         if (deadline < block.timestamp) revert DeadlineExpired(deadline);
 
         address assetToken = _assetForPair(tokenIn, tokenOut);

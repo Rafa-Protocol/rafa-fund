@@ -594,6 +594,14 @@ describe("RafaFundV2", function () {
   it("only recovers unsupported tokens and requires supported assets to be empty before removal", async function () {
     const { owner, other, fund, weth, unsupported } = await deploySystem();
     await unsupported.mint(await fund.getAddress(), WAD);
+
+    await expect(
+      fund.connect(owner).recoverUnsupportedToken(await unsupported.getAddress(), ethers.ZeroAddress, WAD),
+    ).to.be.revertedWithCustomError(fund, "InvalidAddress");
+    await expect(
+      fund.connect(owner).recoverUnsupportedToken(await unsupported.getAddress(), other.address, 0n),
+    ).to.be.revertedWithCustomError(fund, "InvalidAmount");
+
     await fund.connect(owner).recoverUnsupportedToken(await unsupported.getAddress(), other.address, WAD);
     expect(await unsupported.balanceOf(other.address)).to.equal(WAD);
 
@@ -991,6 +999,38 @@ describe("RafaFundV2", function () {
       fund,
       "InvalidAmount",
     );
+    await expect(fund.connect(investor).redeemInKind(1n, ethers.ZeroAddress, investor.address)).to.be.revertedWithCustomError(
+      fund,
+      "InvalidAddress",
+    );
+    await expect(fund.connect(investor).deposit(100n, ethers.ZeroAddress)).to.be.revertedWithCustomError(
+      fund,
+      "InvalidAddress",
+    );
+    await expect(fund.connect(investor).deposit(0n, investor.address)).to.be.revertedWithCustomError(
+      fund,
+      "InvalidAmount",
+    );
+    await expect(fund.connect(investor).mint(100n, ethers.ZeroAddress)).to.be.revertedWithCustomError(
+      fund,
+      "InvalidAddress",
+    );
+    await expect(fund.connect(investor).mint(0n, investor.address)).to.be.revertedWithCustomError(
+      fund,
+      "InvalidAmount",
+    );
+    await expect(fund.connect(investor).redeem(100n, ethers.ZeroAddress, investor.address)).to.be.revertedWithCustomError(
+      fund,
+      "InvalidAddress",
+    );
+    await expect(fund.connect(investor).redeem(0n, investor.address, investor.address)).to.be.revertedWithCustomError(
+      fund,
+      "InvalidAmount",
+    );
+    await expect(fund.connect(other).withdraw(100n, ethers.ZeroAddress, investor.address)).to.be.revertedWithCustomError(
+      fund,
+      "InvalidAddress",
+    );
   });
 });
 
@@ -1237,6 +1277,18 @@ describe("Chain execution adapters", function () {
       adapter,
       "OwnableUnauthorizedAccount",
     );
+    await expect(adapter.configurePool(ethers.ZeroAddress, 500)).to.be.revertedWithCustomError(
+      adapter,
+      "InvalidAddress",
+    );
+    await expect(adapter.configurePool(await usdc.getAddress(), 500)).to.be.revertedWithCustomError(
+      adapter,
+      "InvalidAddress",
+    );
+    await expect(adapter.configurePool(await equity.getAddress(), 0)).to.be.revertedWithCustomError(
+      adapter,
+      "InvalidAmount",
+    );
     await adapter.configurePool(await equity.getAddress(), 500);
     await router.setRate(
       await usdc.getAddress(),
@@ -1250,13 +1302,37 @@ describe("Chain execution adapters", function () {
     await equity.mint(await router.getAddress(), ethers.parseUnits("100", 18));
     await usdc.connect(trader).approve(await adapter.getAddress(), ethers.MaxUint256);
 
+    const deadline = (await latestTimestamp()) + 600;
+
+    await expect(
+      adapter.connect(trader).swapExactInput(
+        await usdc.getAddress(),
+        await equity.getAddress(),
+        0n,
+        1n,
+        trader.address,
+        deadline,
+      ),
+    ).to.be.revertedWithCustomError(adapter, "InvalidAmount");
+
+    await expect(
+      adapter.connect(trader).swapExactInput(
+        await usdc.getAddress(),
+        await equity.getAddress(),
+        ethers.parseUnits("100", 6),
+        1n,
+        ethers.ZeroAddress,
+        deadline,
+      ),
+    ).to.be.revertedWithCustomError(adapter, "InvalidAddress");
+
     await adapter.connect(trader).swapExactInput(
       await usdc.getAddress(),
       await equity.getAddress(),
       ethers.parseUnits("100", 6),
       ethers.parseUnits("0.99", 18),
       trader.address,
-      (await latestTimestamp()) + 600,
+      deadline,
     );
     expect(await equity.balanceOf(trader.address)).to.equal(ethers.parseUnits("1", 18));
 
@@ -1267,9 +1343,105 @@ describe("Chain execution adapters", function () {
         ethers.parseUnits("1", 6),
         1,
         trader.address,
-        (await latestTimestamp()) + 600,
+        deadline,
       ),
     ).to.be.revertedWithCustomError(adapter, "PoolNotConfigured");
+  });
+
+  it("executes an owner-approved Base Aerodrome route and validates inputs", async function () {
+    const [owner, trader] = await ethers.getSigners();
+    const usdc = await ethers.deployContract("MockERC20", ["USD Coin", "USDC", 6]);
+    const aero = await ethers.deployContract("MockERC20", ["Aerodrome", "AERO", 18]);
+    const other = await ethers.deployContract("MockERC20", ["Other", "OTHER", 18]);
+    const router = await ethers.deployContract("MockAerodromeRouter");
+    const adapter = await ethers.deployContract("AerodromeAdapter", [
+      owner.address,
+      await usdc.getAddress(),
+      await router.getAddress(),
+    ]);
+
+    await expect(adapter.connect(trader).configureRoute(await aero.getAddress(), false, ethers.ZeroAddress)).to.be.revertedWithCustomError(
+      adapter,
+      "OwnableUnauthorizedAccount",
+    );
+    await expect(adapter.configureRoute(ethers.ZeroAddress, false, ethers.ZeroAddress)).to.be.revertedWithCustomError(
+      adapter,
+      "InvalidAddress",
+    );
+    await expect(adapter.configureRoute(await usdc.getAddress(), false, ethers.ZeroAddress)).to.be.revertedWithCustomError(
+      adapter,
+      "InvalidAddress",
+    );
+
+    await adapter.configureRoute(await aero.getAddress(), false, ethers.ZeroAddress);
+    await router.setRate(
+      await usdc.getAddress(),
+      await aero.getAddress(),
+      false,
+      ethers.parseUnits("1", 18),
+      ethers.parseUnits("100", 6),
+    );
+
+    await usdc.mint(trader.address, ethers.parseUnits("1000", 6));
+    await aero.mint(await router.getAddress(), ethers.parseUnits("100", 18));
+    await usdc.connect(trader).approve(await adapter.getAddress(), ethers.MaxUint256);
+
+    const deadline = (await latestTimestamp()) + 600;
+
+    await expect(
+      adapter.connect(trader).swapExactInput(
+        await usdc.getAddress(),
+        await aero.getAddress(),
+        0n,
+        1n,
+        trader.address,
+        deadline,
+      ),
+    ).to.be.revertedWithCustomError(adapter, "InvalidAmount");
+
+    await expect(
+      adapter.connect(trader).swapExactInput(
+        await usdc.getAddress(),
+        await aero.getAddress(),
+        ethers.parseUnits("100", 6),
+        1n,
+        ethers.ZeroAddress,
+        deadline,
+      ),
+    ).to.be.revertedWithCustomError(adapter, "InvalidAddress");
+
+    await adapter.connect(trader).swapExactInput(
+      await usdc.getAddress(),
+      await aero.getAddress(),
+      ethers.parseUnits("100", 6),
+      ethers.parseUnits("0.99", 18),
+      trader.address,
+      deadline,
+    );
+    expect(await aero.balanceOf(trader.address)).to.equal(ethers.parseUnits("1", 18));
+
+    await expect(
+      adapter.connect(trader).swapExactInput(
+        await usdc.getAddress(),
+        await other.getAddress(),
+        ethers.parseUnits("1", 6),
+        1n,
+        trader.address,
+        deadline,
+      ),
+    ).to.be.revertedWithCustomError(adapter, "RouteNotConfigured");
+
+    await adapter.disableRoute(await aero.getAddress());
+    await expect(
+      adapter.connect(trader).swapExactInput(
+        await usdc.getAddress(),
+        await aero.getAddress(),
+        ethers.parseUnits("1", 6),
+        1n,
+        trader.address,
+        deadline,
+      ),
+    ).to.be.revertedWithCustomError(adapter, "RouteNotConfigured");
   });
 });
 
@@ -1305,6 +1477,9 @@ describe("ChainlinkPriceOracle", function () {
 
     await sequencerFeed.setRoundData(4, 0, timestamp - 1000, timestamp, 4);
     await assetFeed.setRoundData(11, 2000n * 10n ** 8n, timestamp, timestamp + 100, 11);
+    await expect(oracle.latestPrice()).to.be.revertedWithCustomError(oracle, "InvalidOracleTimestamp");
+
+    await assetFeed.setRoundData(12, 2000n * 10n ** 8n, timestamp, 0, 12);
     await expect(oracle.latestPrice()).to.be.revertedWithCustomError(oracle, "InvalidOracleTimestamp");
   });
 

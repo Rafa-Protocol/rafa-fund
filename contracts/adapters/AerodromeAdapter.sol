@@ -64,7 +64,8 @@ contract AerodromeAdapter is ITradeAdapter, Ownable2Step, ReentrancyGuard {
         address recipient,
         uint256 deadline
     ) external nonReentrant returns (uint256 amountOut) {
-        if (amountIn == 0 || recipient == address(0)) revert InvalidAmount();
+        if (recipient == address(0)) revert InvalidAddress();
+        if (amountIn == 0) revert InvalidAmount();
         if (deadline < block.timestamp) revert DeadlineExpired(deadline);
 
         address assetToken = _assetForPair(tokenIn, tokenOut);

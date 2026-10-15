@@ -93,8 +93,10 @@ contract ChainlinkPriceOracle is IPriceOracle {
         returns (uint256 answerWad, uint256 updatedAt)
     {
         (, int256 answer,, uint256 feedUpdatedAt,) = feed.latestRoundData();
-        if (answer <= 0 || feedUpdatedAt == 0) revert InvalidOracleAnswer(address(feed), answer);
-        if (feedUpdatedAt > block.timestamp) revert InvalidOracleTimestamp(address(feed), feedUpdatedAt);
+        if (answer <= 0) revert InvalidOracleAnswer(address(feed), answer);
+        if (feedUpdatedAt == 0 || feedUpdatedAt > block.timestamp) {
+            revert InvalidOracleTimestamp(address(feed), feedUpdatedAt);
+        }
 
         answerWad = uint256(answer) * (10 ** (WAD_DECIMALS - feedDecimals));
         updatedAt = feedUpdatedAt;
